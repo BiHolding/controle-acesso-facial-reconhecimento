@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "controle-acesso-facial-reconhecimento"
+version = "0.1.0"
+description = "Cliente local de reconhecimento facial — envia embeddings para a API hospedada"
+requires-python = ">=3.12"
+
+dependencies = [
+    "opencv-python",
+    "numpy",
+    "insightface",
+    "onnxruntime",
+    "httpx>=0.27",
+    "python-dotenv>=1.0",
+]
+
+[project.scripts]
+reconhecer = "reconhecimento.recognize:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
