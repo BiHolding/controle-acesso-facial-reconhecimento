@@ -1,110 +1,127 @@
-# controle-acesso-facial-reconhecimento
+# Controle de acesso facial — local-first
 
-Cliente local de reconhecimento facial.
-Captura frames da câmera, detecta rostos, gera embeddings e envia para a API hospedada.
-A API cuida do banco, da busca por similaridade e do registro dos eventos.
+Cliente local do computador da entrada da Sala VIP. Captura uma face, gera um
+embedding com InsightFace e faz matching local contra o banco MySQL. Não existe
+servidor facial separado. O reconhecimento é 100% local.
 
----
+## Fluxo
 
-## Como funciona
-
+```text
+MySQL (guests + client + guest_face_embeddings)
+  -> Python carrega embeddings elegiveis
+  -> FaceIndex NumPy local (busca cosseno exata)
+Câmera -> InsightFace buffalo_l -> embedding L2 (512 floats)
+  -> matching local -> threshold
+  -> 5 confirmacoes consecutivas
+  -> revalidacao MySQL (guest completed + client active)
+  -> allowed/denied -> badge local -> access_event
 ```
-Câmera → detecta rosto → gera embedding (512 floats)
-    → POST /api/recognize na API
-        → API busca no banco via pgvector
-        → API verifica permissão
-        → API salva o log
-    → Badge verde (permitido) ou vermelho (negado) na tela
-```
 
----
+DB indisponivel = FAIL CLOSED (badge amarelo "NAO FOI POSSIVEL VALIDAR").
 
 ## Requisitos
 
 - Python 3.12+
-- Câmera conectada (USB ou embutida)
-- Acesso à API hospedada (URL + chave)
+- Camera conectada
+- MySQL acessivel (ispevolution_p)
+- Credenciais de banco com privilegios minimos
 
----
-
-## Instalação
-
-```bash
-git clone <url-do-repositorio>
-cd controle-acesso-facial-reconhecimento
-
-python3 -m venv env
-source env/bin/activate
-
-pip install -e .
-```
-
----
-
-## Configuração
+## Instalacao
 
 ```bash
-cp .env.example .env
+python -m venv .venv
+python -m pip install -e .
 ```
 
-Edite o `.env`:
+No Windows PowerShell, ative com `.venv\Scripts\Activate.ps1`.
+
+## Configuracao
+
+Crie `.env` a partir de `.env.example`:
 
 ```env
-# URL base da API hospedada (sem barra no final)
-API_URL=https://meu-servidor.com
+DB_HOST=127.0.0.1
+DB_PORT=3306
+DB_NAME=ispevolution_p
+DB_USER=replace-with-db-user
+DB_PASSWORD=replace-with-db-password
 
-# Deve ser igual ao API_KEY configurado no servidor
-API_KEY=troque-por-uma-chave-segura
+ACCESS_POINT=vip_room
+DEVICE_ID=0
 
-# Ponto de acesso desta máquina (main_door ou vip_room)
-ACCESS_POINT=main_door
+FACE_MATCH_THRESHOLD=0.60
+FACE_MODEL_VERSION=v1
+FACE_SYNC_INTERVAL_SECONDS=30
 ```
 
----
-
-## Rodando
-
-```bash
-source env/bin/activate
-reconhecer
-```
-
-Ou diretamente:
-
-```bash
-python -m reconhecimento.recognize
-```
-
-Pressione `Q` para encerrar.
-
----
+`DEVICE_ID=0` desabilita gravacao de access_events.
 
 ## Estrutura
 
 ```
 src/reconhecimento/
 ├── camera/
-│   └── capture.py          # Câmera via OpenCV
+│   └── capture.py          # Camera via OpenCV
+├── database/
+│   └── repository.py       # MySQL: embeddings, revalidation, access_events
 ├── recognition/
-│   ├── detector.py         # Detecção de rostos (InsightFace buffalo_l)
-│   ├── embedder.py         # Geração de embedding L2-normalizado
-│   ├── confirmation.py     # Janela deslizante — evita falsos positivos
-│   └── guard.py            # Cooldown por pessoa — evita eventos duplicados
+│   ├── detector.py         # Deteccao de rostos (InsightFace buffalo_l, detection only)
+│   ├── embedder.py         # Geracao de embedding L2 (ArcFace ONNX direto)
+│   ├── matcher.py          # FaceIndex NumPy (busca cosseno exata)
+│   ├── confirmation.py     # 5 observacoes consecutivas
+│   └── guard.py            # Cooldown por pessoa
+├── sync/
+│   └── face_sync.py        # Sincronizacao periodica MySQL -> index
 ├── api/
-│   └── client.py           # Chama POST /api/recognize via httpx
+│   └── client.py           # Legado (nao usado no fluxo local)
 └── recognize.py            # Loop principal
 ```
 
----
+## Execucao
 
-## Ajustes de comportamento
+```bash
+reconhecer
+```
 
-Edite as constantes no topo de `src/reconhecimento/recognize.py`:
+Ou `python -m reconhecimento.recognize`. Pressione `q` para encerrar.
 
-| Constante | Padrão | Descrição |
-|---|---|---|
-| `PROCESS_EVERY_N` | `3` | Analisa 1 a cada N frames (alivia CPU) |
-| `SHOW_SECS` | `3.0` | Segundos que o badge fica visível |
-| `UNKNOWN_REQUIRED` | `10` | Frames sem reconhecimento para mostrar "Desconhecido" |
+Estados da UI:
 
-A janela de confirmação (`required_frames=5`) e o cooldown por pessoa (`cooldown_seconds=10`) também podem ser ajustados no `recognize.py`.
+- Verde: acesso autorizado e nome.
+- Vermelho: acesso nao autorizado.
+- Vermelho: pessoa nao identificada.
+- Amarelo: nao foi possivel validar.
+
+## Modelo e confirmacao
+
+- Pack InsightFace: `buffalo_l`.
+- Provider: `CPUExecutionProvider`.
+- Modulos: deteccao (FaceAnalysis) + reconhecimento (ArcFace ONNX direto).
+- Entrada do detector: 320x320.
+- Embedding esperado: 512 dimensoes, normalizado em L2.
+- Comparacao local: produto escalar/cosseno entre vetores normalizados.
+- Confirmacao: 5 observacoes consecutivas da mesma identidade.
+- Cooldown local: 10 segundos por Guest e 10 segundos para desconhecido.
+
+O reconhecimento e 100% local. Nao existe chamada HTTP para reconhecimento.
+A revalidacao MySQL e feita antes de `allowed=true`. DB indisponivel = negado.
+
+## Elegibilidade
+
+Guest elegivel: `status=completed` AND `client.status=active`.
+Embedding elegivel: `active=1`, `model=buffalo_l`, `dimension=512`, `normalization=l2`.
+Sync periodico: a cada 30 segundos (configuravel).
+
+## BLOB do embedding
+
+O MySQL armazena o embedding como BLOB (PHP `pack('g*')`) = 2048 bytes =
+512 float32 little-endian nativo. O Python le com `numpy.frombuffer()`.
+
+## Testes
+
+```bash
+python -m unittest discover -s tests -v
+```
+
+Detalhes da integracao e das mudancas requeridas no backend estao em
+`docs/integracao-portal-vip.md`.

@@ -5,16 +5,18 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "controle-acesso-facial-reconhecimento"
 version = "0.1.0"
-description = "Cliente local de reconhecimento facial — envia embeddings para a API hospedada"
+description = "Cliente local de reconhecimento facial — matching local MySQL + InsightFace"
 requires-python = ">=3.12"
 
 dependencies = [
-    "opencv-python",
-    "numpy",
-    "insightface",
-    "onnxruntime",
+    "opencv-python==5.0.0.93",
+    "numpy==2.5.2",
+    "insightface==1.0.1",
+    "onnxruntime==1.29.0",
+    "pymysql>=1.1",
     "httpx>=0.27",
     "python-dotenv>=1.0",
+    "PyQt5>=5.15",
 ]
 
 [project.scripts]

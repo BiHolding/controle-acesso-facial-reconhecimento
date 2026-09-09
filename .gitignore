@@ -3,7 +3,10 @@ __pycache__/
 *.pyc
 *.pyo
 .venv/
+.venv*/
 env/
+.pytest_cache/
+src/access_events.jsonl
 dist/
 build/
 *.egg-info/

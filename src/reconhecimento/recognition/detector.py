@@ -7,6 +7,7 @@ class FaceDetector:
         self.model = FaceAnalysis(
             name="buffalo_l",
             providers=["CPUExecutionProvider"],
+            allowed_modules=["detection"],
         )
         # 320x320 é suficiente para tempo real na CPU e reduz latência vs 640x640
         self.model.prepare(ctx_id=0, det_size=(320, 320))
