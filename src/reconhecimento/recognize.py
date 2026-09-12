@@ -21,7 +21,7 @@ ensure_onnxruntime_loaded()
 import cv2
 from dotenv import load_dotenv
 
-from reconhecimento.config import camera_index_from_env
+from reconhecimento.config import access_direction_from_env, camera_index_from_env
 from reconhecimento.recognition.confirmation import RecognitionConfirmation
 from reconhecimento.recognition.detector import FaceDetector
 from reconhecimento.recognition.embedder import FaceEmbedder
@@ -364,11 +364,12 @@ def main() -> None:
     load_dotenv()
     try:
         camera_index = camera_index_from_env()
+        access_direction = access_direction_from_env()
     except ValueError as exc:
         print(exc)
         raise SystemExit(2) from None
 
-    print(f"[CONFIG] Camera index: {camera_index}")
+    print(f"[CONFIG] Camera index: {camera_index} | Direction: {access_direction}")
 
     detector = FaceDetector()
     embedder = FaceEmbedder()
@@ -401,6 +402,7 @@ def main() -> None:
         repository=repository,
         sync_thread=sync,
         camera_index=camera_index,
+        access_direction=access_direction,
     )
 
     sync.stop()

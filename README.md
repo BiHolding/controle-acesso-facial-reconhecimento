@@ -85,6 +85,38 @@ reconhecer
 
 Ou `python -m reconhecimento.recognize`. Pressione `q` para encerrar.
 
+### Duas webcams e dois monitores no mesmo notebook
+
+Configure o pareamento no `.env`:
+
+```env
+STATION_1_CAMERA_INDEX=0
+STATION_1_DISPLAY_INDEX=0
+STATION_1_DEVICE_ID=0
+STATION_1_DIRECTION=ENTRY
+STATION_1_ACCESS_POINT=VIP_ENTRANCE_01
+STATION_2_CAMERA_INDEX=1
+STATION_2_DISPLAY_INDEX=1
+STATION_2_DEVICE_ID=0
+STATION_2_DIRECTION=EXIT
+STATION_2_ACCESS_POINT=VIP_EXIT_01
+```
+
+Depois inicie as duas estações com:
+
+```bash
+reconhecer-duplo
+```
+
+Cada estação roda em um processo isolado. Se uma câmera apresentar falha, a
+outra permanece disponível. O inicializador bloqueia câmera ou monitor duplicado
+e avisa quando o segundo monitor não está habilitado no Windows. Para registrar
+os eventos no banco, substitua os zeros por dois IDs válidos e distintos da
+tabela `access_control_devices`. O enrollment automático roda somente na estação
+1, evitando que as duas instâncias processem a mesma fotografia simultaneamente.
+Os blocos `STATION_1_*` e `STATION_2_*` podem ser invertidos livremente: webcam,
+monitor, função e ponto de acesso sempre permanecem associados no mesmo bloco.
+
 Estados da UI:
 
 - Verde: acesso autorizado e nome.

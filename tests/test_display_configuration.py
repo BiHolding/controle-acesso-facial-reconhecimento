@@ -2,7 +2,7 @@ import os
 import unittest
 from unittest.mock import patch
 
-from reconhecimento.config import camera_index_from_env
+from reconhecimento.config import access_direction_from_env, camera_index_from_env
 from reconhecimento.display import _first_name, _layout_metrics, _safe_display_index
 
 
@@ -25,6 +25,20 @@ class CameraIndexConfigurationTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Invalid CAMERA_INDEX: -1"):
             camera_index_from_env()
 
+
+class AccessDirectionConfigurationTest(unittest.TestCase):
+    @patch.dict(os.environ, {}, clear=True)
+    def test_direction_defaults_to_entry(self):
+        self.assertEqual("ENTRY", access_direction_from_env())
+
+    @patch.dict(os.environ, {"ACCESS_DIRECTION": " exit "}, clear=True)
+    def test_direction_is_normalized(self):
+        self.assertEqual("EXIT", access_direction_from_env())
+
+    @patch.dict(os.environ, {"ACCESS_DIRECTION": "side"}, clear=True)
+    def test_invalid_direction_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, "Invalid ACCESS_DIRECTION"):
+            access_direction_from_env()
 
 class DisplayHelpersTest(unittest.TestCase):
     def test_first_name_is_safe(self) -> None:

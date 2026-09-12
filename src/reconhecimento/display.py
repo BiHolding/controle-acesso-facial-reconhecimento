@@ -89,9 +89,11 @@ def _layout_metrics(width: int, height: int) -> tuple[int, int, int]:
 
 @dataclass
 class DisplayResult:
-    state: str  # "authorized" | "denied" | "unknown" | "error" | "idle"
+    state: str  # authorized | denied | unknown | error | guidance | validating | idle
     name: str | None = None
     similarity: float | None = None
+    message: str | None = None
+    reason: str | None = None
 
 
 # ── Worker de reconhecimento (thread) ──────────────────────────────────────────
@@ -126,6 +128,12 @@ class RecognitionWorkerThread(QThread):
         self._unknown_frames = 0
         self._show_secs = 3.0
         self._unknown_required = 10
+        self._guidance_reason: str | None = None
+        self._guidance_frames = 0
+        self._last_emitted_guidance: str | None = None
+
+        from reconhecimento.recognition.quality import FaceQualityAssessor
+        self._quality = FaceQualityAssessor()
 
     def submit_frame(self, frame):
         with self._frame_lock:
@@ -164,13 +172,24 @@ class RecognitionWorkerThread(QThread):
 
         if n_faces == 0:
             self._unknown_frames = 0
+            self._confirmations.clear()
+            self._guide("NO_FACE", "Posicione-se diante da câmera e olhe para a tela.", required_frames=5)
             return
 
         if n_faces > 1:
             self._confirmations.clear()
-            self.result_ready.emit(DisplayState.error())
             self._unknown_frames = 0
+            self._guide("MULTIPLE_FACES", "Vamos por uma pessoa de cada vez.")
             return
+
+        quality = self._quality.assess(frame, faces[0])
+        if not quality.acceptable:
+            self._confirmations.clear()
+            self._unknown_frames = 0
+            self._guide(quality.reason, quality.message)
+            return
+
+        self._clear_guidance()
 
         any_recognized = False
         recognize_failed = False
@@ -237,6 +256,33 @@ class RecognitionWorkerThread(QThread):
         else:
             self._unknown_frames = 0
 
+    def _guide(self, reason: str, message: str, *, required_frames: int = 3) -> None:
+        """Evita mensagens piscando quando uma métrica oscila entre frames."""
+        if reason == self._guidance_reason:
+            self._guidance_frames += 1
+        else:
+            self._guidance_reason = reason
+            self._guidance_frames = 1
+
+        if self._guidance_frames >= required_frames and reason != self._last_emitted_guidance:
+            self.result_ready.emit(DisplayResult(
+                state="guidance",
+                message=message,
+                reason=reason,
+            ))
+            self._last_emitted_guidance = reason
+
+    def _clear_guidance(self) -> None:
+        had_visible_guidance = self._last_emitted_guidance is not None
+        self._guidance_reason = None
+        self._guidance_frames = 0
+        self._last_emitted_guidance = None
+        if had_visible_guidance:
+            self.result_ready.emit(DisplayResult(
+                state="validating",
+                message="Perfeito. Mantenha-se assim por um instante.",
+            ))
+
 
 # ── DisplayState helper ────────────────────────────────────────────────────────
 
@@ -265,6 +311,23 @@ class CameraWidget(QLabel):
         self._displayed_pixmap: QPixmap | None = None
         self._source_size = (CAMERA_WIDTH, CAMERA_HEIGHT)
         self._visual_crop_rect = (0, 0, CAMERA_WIDTH, CAMERA_HEIGHT)
+        self._guide_color = QColor(230, 237, 243, 85)
+        self._guide_width = 2
+
+    def set_guide_state(self, state: str) -> None:
+        """Atualiza o contorno sem esconder a imagem da câmera."""
+        guide_styles = {
+            "guidance": (QColor(245, 183, 49, 230), 3),
+            "validating": (QColor(90, 200, 250, 220), 3),
+            "authorized": (QColor(46, 204, 113, 235), 4),
+            "denied": (QColor(239, 83, 80, 225), 3),
+            "unknown": (QColor(239, 83, 80, 225), 3),
+            "error": (QColor(245, 183, 49, 220), 3),
+        }
+        self._guide_color, self._guide_width = guide_styles.get(
+            state, (QColor(230, 237, 243, 85), 2)
+        )
+        self.update()
 
     def aspect_ratio(self) -> float:
         if self._pixmap is None or self._pixmap.height() == 0:
@@ -326,7 +389,7 @@ class CameraWidget(QLabel):
         guide_height = int(self.height() * 0.50)
         guide_x = (self.width() - guide_width) // 2
         guide_y = (self.height() - guide_height) // 2
-        painter.setPen(QPen(QColor(230, 237, 243, 85), 2))
+        painter.setPen(QPen(self._guide_color, self._guide_width))
         painter.setBrush(Qt.NoBrush)
         painter.drawRoundedRect(guide_x, guide_y, guide_width, guide_height, 28, 28)
 
@@ -351,7 +414,7 @@ class StatusWidget(QLabel):
             padding: 12px;
         """)
 
-    def set_status(self, state: str, name: str | None = None):
+    def set_status(self, state: str, name: str | None = None, message: str | None = None):
         if state == "authorized":
             self.setText("Aproveite a experiência VIP.\nPode entrar.")
             self.setStyleSheet(f"""
@@ -377,7 +440,7 @@ class StatusWidget(QLabel):
                 padding: 12px;
             """)
         elif state == "error":
-            self.setText("Procure nossa equipe.")
+            self.setText(message or "Procure nossa equipe.")
             self.setStyleSheet(f"""
                 color: {ACCENT_AMBER};
                 font-size: 18px;
@@ -385,11 +448,19 @@ class StatusWidget(QLabel):
                 padding: 12px;
             """)
         elif state == "validating":
-            self.setText("Aguarde um instante.")
+            self.setText(message or "Aguarde um instante.")
             self.setStyleSheet(f"""
                 color: {FG_SECONDARY};
                 font-size: 18px;
                 font-weight: 500;
+                padding: 12px;
+            """)
+        elif state == "guidance":
+            self.setText(message or "Ajuste sua posição para continuarmos.")
+            self.setStyleSheet(f"""
+                color: {ACCENT_AMBER};
+                font-size: 18px;
+                font-weight: 600;
                 padding: 12px;
             """)
         else:
@@ -507,7 +578,7 @@ class SuccessOverlay(QWidget):
 class PortraitWindow(QMainWindow):
     """Janela principal com layout portrait para totem."""
 
-    def __init__(self, screen, camera_index: int = 0):
+    def __init__(self, screen, camera_index: int = 0, access_direction: str = "ENTRY"):
         super().__init__()
         self.setWindowTitle("VIP ISP Evolution — Reconhecimento Facial")
         self.setWindowFlag(Qt.FramelessWindowHint, True)
@@ -516,6 +587,7 @@ class PortraitWindow(QMainWindow):
         screen_geometry = screen.geometry()
         self._is_portrait = screen_geometry.height() > screen_geometry.width()
         self._screen_size = screen_geometry.size()
+        self._access_direction = access_direction
 
         # Centralizar e configurar
         self._setup_geometry(screen_geometry)
@@ -531,6 +603,7 @@ class PortraitWindow(QMainWindow):
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._on_timer)
         self._frame_count = 0
+        self._camera_read_failures = 0
 
         # Controle de estado
         self._current_state = "idle"
@@ -565,7 +638,8 @@ class PortraitWindow(QMainWindow):
         brand.setObjectName("brand")
         header_layout.addWidget(brand)
 
-        subtitle = QLabel("SALA VIP")
+        direction_label = "ENTRADA" if self._access_direction == "ENTRY" else "SAÍDA"
+        subtitle = QLabel(f"{direction_label} • SALA VIP")
         subtitle.setAlignment(Qt.AlignCenter)
         subtitle.setWordWrap(True)
         subtitle.setObjectName("subtitle")
@@ -700,8 +774,13 @@ class PortraitWindow(QMainWindow):
             self._timer.start(CAMERA_POLL_MS)
         except RuntimeError as exc:
             print(exc)
-            self._status.set_status("error")
-            self._set_instruction("Não foi possível validar seu acesso", ACCENT_AMBER)
+            self._current_state = "camera_error"
+            self._camera_widget.set_guide_state("error")
+            self._status.set_status(
+                "error",
+                message="A câmera está indisponível. Nossa equipe pode ajudar você.",
+            )
+            self._set_instruction("Câmera temporariamente indisponível", ACCENT_AMBER)
 
     def stop_camera(self):
         """Para a câmera e o timer."""
@@ -730,7 +809,20 @@ class PortraitWindow(QMainWindow):
         try:
             frame = self._camera.read()
         except RuntimeError:
+            self._camera_read_failures += 1
+            if self._camera_read_failures == 30:
+                self._current_state = "camera_error"
+                self._camera_widget.set_guide_state("error")
+                self._status.set_status(
+                    "error",
+                    message="A câmera foi interrompida. Nossa equipe pode ajudar você.",
+                )
+                self._set_instruction("Câmera temporariamente indisponível", ACCENT_AMBER)
             return
+
+        self._camera_read_failures = 0
+        if self._current_state == "camera_error":
+            self._return_to_idle()
 
         self._frame_count += 1
 
@@ -747,6 +839,7 @@ class PortraitWindow(QMainWindow):
     def _on_result(self, result: DisplayResult):
         """Recebe resultado do worker de reconhecimento."""
         state = result.state
+        self._camera_widget.set_guide_state(state)
 
         if state == "authorized":
             self._current_state = "authorized"
@@ -782,17 +875,25 @@ class PortraitWindow(QMainWindow):
 
         elif state == "validating":
             self._current_state = "validating"
+            self._success_until = time.monotonic() + (DEFAULT_RESULT_SHOW_MS / 1000)
             self._success_overlay.hide_success()
-            self._status.set_status("validating")
+            self._status.set_status("validating", message=result.message)
             self._set_instruction("Validando seu acesso...", FG_SECONDARY)
             show_ms = DEFAULT_RESULT_SHOW_MS
+
+        elif state == "guidance":
+            self._current_state = "guidance"
+            self._success_overlay.hide_success()
+            self._status.set_status("guidance", message=result.message)
+            self._set_instruction("Só um pequeno ajuste", ACCENT_AMBER)
+            show_ms = 0
 
         else:
             self._return_to_idle()
             show_ms = 0
 
         # Timer para voltar ao idle
-        if state != "idle":
+        if state not in {"idle", "guidance"}:
             QTimer.singleShot(show_ms, self._check_return_to_idle)
 
     def _set_instruction(
@@ -813,12 +914,16 @@ class PortraitWindow(QMainWindow):
 
     def _check_return_to_idle(self):
         """Verifica se deve voltar ao estado idle."""
-        if time.monotonic() >= self._success_until:
+        if (
+            self._current_state not in {"guidance", "camera_error"}
+            and time.monotonic() >= self._success_until
+        ):
             self._return_to_idle()
 
     def _return_to_idle(self):
         """Retorna ao estado idle."""
         self._current_state = "idle"
+        self._camera_widget.set_guide_state("idle")
         self._success_overlay.hide_success()
         self._status.set_status("idle")
         self._set_instruction("Olhe para a câmera", FG_SECONDARY, 20, 500)
@@ -850,6 +955,7 @@ def run_display(
     repository=None,
     sync_thread=None,
     camera_index: int = 0,
+    access_direction: str = "ENTRY",
 ):
     """Executa o loop Qt com reconhecimento facial."""
     if hasattr(Qt, "AA_EnableHighDpiScaling"):
@@ -889,7 +995,11 @@ def run_display(
     print(f"[DISPLAY] Logical DPI: {selected_screen.logicalDotsPerInch():g}")
     print(f"[DISPLAY] Physical DPI: {selected_screen.physicalDotsPerInch():g}")
 
-    window = PortraitWindow(screen=selected_screen, camera_index=camera_index)
+    window = PortraitWindow(
+        screen=selected_screen,
+        camera_index=camera_index,
+        access_direction=access_direction,
+    )
     window.winId()
     window.windowHandle().setScreen(selected_screen)
     window.setGeometry(geometry)
