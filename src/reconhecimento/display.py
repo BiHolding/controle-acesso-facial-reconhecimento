@@ -125,7 +125,10 @@ class RecognitionWorkerThread(QThread):
         self._frame_lock = __import__("threading").Lock()
         self._frame_event = __import__("threading").Event()
 
-        self._embedding_samples: deque[np.ndarray] = deque(maxlen=5)
+        confirmation_samples = int(os.getenv("FACE_CONFIRMATION_SAMPLES", "3"))
+        if confirmation_samples < 3 or confirmation_samples > 7:
+            confirmation_samples = 3
+        self._embedding_samples: deque[np.ndarray] = deque(maxlen=confirmation_samples)
         self._blocked_until = 0.0
         self._show_secs = 3.0
         self._unknown_required = 10

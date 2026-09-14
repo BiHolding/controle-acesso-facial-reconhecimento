@@ -193,7 +193,7 @@ class EnrollmentClientTest(unittest.TestCase):
     def test_publishes_guest_embedding_with_backend_contract(self) -> None:
         def handler(request: httpx.Request) -> httpx.Response:
             self.assertEqual(request.method, "PUT")
-            self.assertEqual(request.url.path, "/vip/api/v1/access-control/guests/42/embedding")
+            self.assertEqual(request.url.path, "/api/v1/access-control/guests/42/embedding")
             self.assertEqual(request.headers["X-Device-Key"], "enrollment-secret")
             payload = json.loads(request.content)
             self.assertEqual(payload["model"], "buffalo_l")
@@ -203,7 +203,7 @@ class EnrollmentClientTest(unittest.TestCase):
             return httpx.Response(200, json={"success": True, "data": {}})
 
         client = EnrollmentClient(
-            "https://ispevolution.com.br/vip/api/v1",
+            "https://ispevolution.com.br/api/v1",
             "enrollment-secret",
             transport=httpx.MockTransport(handler),
         )
@@ -213,7 +213,7 @@ class EnrollmentClientTest(unittest.TestCase):
 
     def test_rejects_invalid_checksum_before_network(self) -> None:
         client = EnrollmentClient(
-            "https://ispevolution.com.br/vip/api/v1",
+            "https://ispevolution.com.br/api/v1",
             "enrollment-secret",
             transport=httpx.MockTransport(lambda _request: httpx.Response(500)),
         )

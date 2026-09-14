@@ -8,14 +8,22 @@ mesma API identifica o participante, aplica as regras e registra entrada/saída.
 
 ```text
 Câmera -> InsightFace buffalo_l -> embedding L2 (512 floats)
-  -> controle de qualidade e média de 5 amostras estáveis
+  -> controle de qualidade e média de 3 amostras estáveis
+  -> identificação local preparada para contingência
   -> API VIP /access-control/recognize
   -> matching no participant_face_embeddings
   -> regras de acesso + ocupação atômica
   -> allowed/denied -> badge local
 ```
 
-API indisponível = FAIL CLOSED (badge amarelo "NÃO FOI POSSÍVEL VALIDAR").
+API indisponível e sem snapshot local válido = FAIL CLOSED (badge amarelo
+"NÃO FOI POSSÍVEL VALIDAR").
+
+Quando existe um snapshot local válido, a queda da API ativa automaticamente o
+modo de contingência: a decisão usa o cache criptografado do Windows, atualiza a
+ocupação local compartilhada entre as duas estações e entra em uma fila FIFO. A
+estação principal reenvia a fila na ordem original assim que a API responder.
+Embeddings nunca são gravados em texto aberto e a fila contém apenas IDs técnicos.
 
 ## Requisitos
 
@@ -44,10 +52,12 @@ DB_NAME=ispevolution_p
 DB_USER=replace-with-db-user
 DB_PASSWORD=replace-with-db-password
 
-API_URL=https://ispevolution.com.br/vip/api/v1
+API_URL=https://ispevolution.com.br/api/v1
 ACCESS_POINT=ENTRADA_PRINCIPAL
 DEVICE_KEY=replace-with-device-key
 ENROLLMENT_DEVICE_KEY=replace-with-enrollment-key
+FACE_CONFIRMATION_SAMPLES=3
+VIP_MAX_CAPACITY=400
 ```
 
 ## Estrutura
@@ -124,7 +134,7 @@ Estados da UI:
 - Entrada do detector: 320x320.
 - Embedding esperado: 512 dimensoes, normalizado em L2.
 - Comparação: produto escalar/cosseno no backend contra o mesmo banco do Portal VIP.
-- Confirmação local: média normalizada de 5 amostras boas antes de uma única chamada à API.
+- Confirmação local: média normalizada de 3 amostras boas antes de uma única chamada à API.
 - Cooldown local: 10 segundos por Guest e 10 segundos para desconhecido.
 
 O reconhecimento e 100% local. Nao existe chamada HTTP para reconhecimento.

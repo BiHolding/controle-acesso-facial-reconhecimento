@@ -359,7 +359,15 @@ class RecognitionWorker(threading.Thread):
 def main() -> None:
     from reconhecimento.api.client import AccessControlClient, EnrollmentClient, RecognitionApiError
     from reconhecimento.display import run_display
-    from reconhecimento.enrollment.pipeline import EnrollmentPipeline, EnrollmentSyncThread
+    from reconhecimento.enrollment.pipeline import EnrollmentPipeline
+    from reconhecimento.offline import (
+        EncryptedFaceCache,
+        HybridRecognitionService,
+        OfflineAccessStore,
+        OfflineReplayThread,
+    )
+    from reconhecimento.recognition.matcher import InMemoryFaceIndex
+    from reconhecimento.sync.face_sync import FaceSyncThread
 
     load_dotenv()
     try:
@@ -387,9 +395,17 @@ def main() -> None:
 
     print(f"[CONFIG] API VIP online | Ponto: {api_client.access_point}")
 
-    enrollment_thread = None
+    threshold = float(os.getenv("FACE_MATCH_THRESHOLD", "0.60"))
+    cache = EncryptedFaceCache()
+    cached = cache.load()
+    index = InMemoryFaceIndex(threshold=threshold)
+    index.replace({guest_id: value[0] for guest_id, value in cached.items()})
+    cached_names = {guest_id: value[1] for guest_id, value in cached.items()}
+    print(f"[CACHE] {len(cached)} identidade(s) disponíveis localmente")
+
     enrollment_client = None
-    repository = None
+    repository = FaceRepository()
+    sync = FaceSyncThread(repository=repository, index=index, encrypted_cache=cache)
     enrollment_enabled = os.getenv("FACE_ENROLLMENT_ENABLED", "false").lower() in {
         "1", "true", "yes",
     }
@@ -406,30 +422,62 @@ def main() -> None:
                 embedder=FaceEmbedder(),
                 enrollment_client=enrollment_client,
             )
-            enrollment_thread = EnrollmentSyncThread(
-                enrollment_pipeline,
-                interval_seconds=float(os.getenv("FACE_ENROLLMENT_INTERVAL_SECONDS", "30")),
-            )
-            enrollment_thread.start()
+            sync.set_enrollment_pipeline(enrollment_pipeline)
             print("[CONFIG] Enrollment automático de convidados ativo")
         except (RecognitionApiError, FaceDatabaseError, ValueError) as exc:
             api_client.close()
             print(f"[CONFIG] Enrollment inválido: {exc}")
             raise SystemExit(2) from None
 
+    sync.start()
+    offline_store = OfflineAccessStore(
+        maximum_capacity=int(os.getenv("VIP_MAX_CAPACITY", "400")),
+    )
+    hybrid = HybridRecognitionService(
+        online_client=api_client,
+        index=index,
+        names=lambda: {**cached_names, **sync.guest_names},
+        store=offline_store,
+        direction=access_direction,
+        access_point=api_client.access_point,
+    )
+
+    replay_thread = None
+    replay_clients = []
+    if os.getenv("STATION_NUMBER", "1") == "1":
+        entry_key = os.getenv("STATION_1_DEVICE_KEY", "").strip()
+        exit_key = os.getenv("STATION_2_DEVICE_KEY", "").strip()
+        if entry_key and exit_key:
+            replay_clients = [
+                AccessControlClient(os.getenv("API_URL", ""), entry_key, "ENTRADA_PRINCIPAL"),
+                AccessControlClient(os.getenv("API_URL", ""), exit_key, "SAIDA_PRINCIPAL"),
+            ]
+            replay_thread = OfflineReplayThread(
+                offline_store,
+                cache,
+                {client.access_point: client for client in replay_clients},
+            )
+            replay_thread.start()
+            print(f"[OFFLINE] Fila pendente: {offline_store.pending_count()}")
+
     # Interface Qt portrait
     exit_code = run_display(
         detector=detector,
         embedder=embedder,
         guard=guard,
-        recognize_fn=api_client.recognize,
+        recognize_fn=hybrid.recognize,
+        sync_thread=sync,
         camera_index=camera_index,
         access_direction=access_direction,
     )
 
-    if enrollment_thread is not None:
-        enrollment_thread.stop()
-        enrollment_thread.join(timeout=3.0)
+    if replay_thread is not None:
+        replay_thread.stop()
+        replay_thread.join(timeout=3.0)
+    for client in replay_clients:
+        client.close()
+    sync.stop()
+    sync.join(timeout=3.0)
     if enrollment_client is not None:
         enrollment_client.close()
     if repository is not None:

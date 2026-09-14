@@ -33,6 +33,7 @@ class FaceSyncThread(threading.Thread):
         on_sync_complete: Callable[[int], None] | None = None,
         enrollment_enabled: bool | None = None,
         enrollment_interval_seconds: float | None = None,
+        encrypted_cache: object | None = None,
     ) -> None:
         super().__init__(daemon=True, name="face-sync")
         self.repository = repository
@@ -57,6 +58,7 @@ class FaceSyncThread(threading.Thread):
         )
         self._last_enrollment_time: float | None = None
         self._enrollment_pipeline = None
+        self._encrypted_cache = encrypted_cache
 
         self._stop_event = threading.Event()
         self._wake_event = threading.Event()
@@ -157,6 +159,11 @@ class FaceSyncThread(threading.Thread):
 
         # Atualiza index atômicamente
         self.index.replace(references)
+        if self._encrypted_cache is not None:
+            try:
+                self._encrypted_cache.save(eligible)
+            except Exception as exc:
+                print(f"[WARN] Falha ao atualizar cache biométrico local: {exc}")
         self._guest_names = new_names
         self._photo_checksums = new_checksums
         self._last_sync_count = len(references)

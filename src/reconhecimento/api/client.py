@@ -14,7 +14,12 @@ load_dotenv()
 
 EMBEDDING_DIMENSION = 512
 _ACCESS_POINT_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
-_TIMEOUT = httpx.Timeout(connect=5.0, read=10.0, write=5.0, pool=5.0)
+_TIMEOUT = httpx.Timeout(
+    connect=float(os.getenv("API_CONNECT_TIMEOUT_SECONDS", "0.6")),
+    read=float(os.getenv("API_READ_TIMEOUT_SECONDS", "1.2")),
+    write=2.0,
+    pool=2.0,
+)
 
 
 class RecognitionApiError(RuntimeError):

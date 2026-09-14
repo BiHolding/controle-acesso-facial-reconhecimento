@@ -137,14 +137,15 @@ class FaceRepository:
         """
         sql = """
             SELECT
-                gfe.guest_id,
+                gfe.participant_id AS guest_id,
                 gfe.embedding,
                 gfe.photo_checksum,
                 g.name AS guest_name
-            FROM guest_face_embeddings gfe
-            JOIN guests g ON g.id = gfe.guest_id
+            FROM participant_face_embeddings gfe
+            JOIN guests g ON g.id = gfe.participant_id
             JOIN clients c ON c.id = g.client_id
             WHERE gfe.active = 1
+              AND gfe.participant_type = 'GUEST'
               AND gfe.model = %s
               AND gfe.dimension = %s
               AND gfe.normalization = %s
@@ -205,8 +206,9 @@ class FaceRepository:
         """
         sql = """
             SELECT gfe.active, gfe.photo_checksum
-            FROM guest_face_embeddings gfe
-            WHERE gfe.guest_id = %s
+            FROM participant_face_embeddings gfe
+            WHERE gfe.participant_type = 'GUEST'
+              AND gfe.participant_id = %s
               AND gfe.active = 1
               AND gfe.model = %s
               AND gfe.dimension = %s
@@ -319,9 +321,10 @@ class FaceRepository:
             dict[guest_id] = photo_checksum
         """
         sql = """
-            SELECT guest_id, photo_checksum
-            FROM guest_face_embeddings
+            SELECT participant_id AS guest_id, photo_checksum
+            FROM participant_face_embeddings
             WHERE active = 1
+              AND participant_type = 'GUEST'
               AND model = %s
               AND dimension = %s
               AND normalization = %s
@@ -443,7 +446,7 @@ class FaceRepository:
                 if existing is not None:
                     # Update existente
                     sql = """
-                        UPDATE guest_face_embeddings
+                        UPDATE participant_face_embeddings
                         SET embedding = %s,
                             photo_checksum = %s,
                             revision = %s,
@@ -454,11 +457,11 @@ class FaceRepository:
                 else:
                     # Insert novo
                     sql = """
-                        INSERT INTO guest_face_embeddings
-                            (guest_id, model, model_version, dimension, normalization,
+                        INSERT INTO participant_face_embeddings
+                            (participant_type, participant_id, model, model_version, dimension, normalization,
                              embedding, photo_checksum, active, revision,
                              created_at, updated_at)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, 1, %s, NOW(), NOW())
+                        VALUES ('GUEST', %s, %s, %s, %s, %s, %s, %s, 1, %s, NOW(), NOW())
                     """
                     cursor.execute(
                         sql,

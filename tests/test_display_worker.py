@@ -8,7 +8,7 @@ from reconhecimento.display import RecognitionWorkerThread
 
 
 class RecognitionWorkerThreadTest(unittest.TestCase):
-    def test_calls_api_once_after_five_stable_samples(self) -> None:
+    def test_calls_api_once_after_three_stable_samples(self) -> None:
         detector = MagicMock()
         detector.detect.return_value = [MagicMock()]
         embedder = MagicMock()
@@ -38,7 +38,7 @@ class RecognitionWorkerThreadTest(unittest.TestCase):
         worker.result_ready.connect(emitted.append)
         frame = np.zeros((480, 640, 3), dtype=np.uint8)
 
-        for _ in range(5):
+        for _ in range(3):
             worker._process(frame)
 
         recognize_fn.assert_called_once()
