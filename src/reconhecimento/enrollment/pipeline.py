@@ -52,8 +52,8 @@ class EnrollmentPipeline:
     def __init__(
         self,
         repository: FaceRepository,
-        detector: FaceDetector,
-        embedder: FaceEmbedder,
+        detector: FaceDetector | None,
+        embedder: FaceEmbedder | None,
         ftp_config: FtpConfig | None = None,
         enrollment_client: EnrollmentClient | None = None,
     ) -> None:
@@ -78,6 +78,11 @@ class EnrollmentPipeline:
 
         if not pending:
             return []
+
+        if self.detector is None:
+            self.detector = FaceDetector()
+        if self.embedder is None:
+            self.embedder = FaceEmbedder()
 
         print(f"[ENROLL] {len(pending)} guest(s) pendente(s) de enrollment")
         results = []
@@ -197,6 +202,9 @@ class EnrollmentPipeline:
         """
         try:
             import cv2
+
+            if self.detector is None or self.embedder is None:
+                return None
 
             # Lê a imagem
             image = cv2.imread(image_path)

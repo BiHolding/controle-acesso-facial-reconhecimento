@@ -418,8 +418,8 @@ def main() -> None:
             repository = FaceRepository()
             enrollment_pipeline = EnrollmentPipeline(
                 repository=repository,
-                detector=FaceDetector(),
-                embedder=FaceEmbedder(),
+                detector=None,
+                embedder=None,
                 enrollment_client=enrollment_client,
             )
             sync.set_enrollment_pipeline(enrollment_pipeline)
