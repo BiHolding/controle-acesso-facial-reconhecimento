@@ -1,30 +1,28 @@
-# Controle de acesso facial — local-first
+# Controle de acesso facial — integrado ao Portal VIP
 
 Cliente local do computador da entrada da Sala VIP. Captura uma face, gera um
-embedding com InsightFace e faz matching local contra o banco MySQL. Não existe
-servidor facial separado. O reconhecimento é 100% local.
+embedding com InsightFace e solicita a decisão à API oficial do Portal VIP. A
+mesma API identifica o participante, aplica as regras e registra entrada/saída.
 
 ## Fluxo
 
 ```text
-MySQL (guests + client + guest_face_embeddings)
-  -> Python carrega embeddings elegiveis
-  -> FaceIndex NumPy local (busca cosseno exata)
 Câmera -> InsightFace buffalo_l -> embedding L2 (512 floats)
-  -> matching local -> threshold
-  -> 5 confirmacoes consecutivas
-  -> revalidacao MySQL (guest completed + client active)
-  -> allowed/denied -> badge local -> access_event
+  -> controle de qualidade e média de 5 amostras estáveis
+  -> API VIP /access-control/recognize
+  -> matching no participant_face_embeddings
+  -> regras de acesso + ocupação atômica
+  -> allowed/denied -> badge local
 ```
 
-DB indisponivel = FAIL CLOSED (badge amarelo "NAO FOI POSSIVEL VALIDAR").
+API indisponível = FAIL CLOSED (badge amarelo "NÃO FOI POSSÍVEL VALIDAR").
 
 ## Requisitos
 
 - Python 3.12+
 - Camera conectada
-- MySQL acessivel (ispevolution_p)
-- Credenciais de banco com privilegios minimos
+- API VIP acessível por HTTPS
+- MySQL/FTP acessíveis somente na estação de enrollment automático
 
 ## Instalacao
 
@@ -46,15 +44,11 @@ DB_NAME=ispevolution_p
 DB_USER=replace-with-db-user
 DB_PASSWORD=replace-with-db-password
 
-ACCESS_POINT=vip_room
-DEVICE_ID=0
-
-FACE_MATCH_THRESHOLD=0.60
-FACE_MODEL_VERSION=v1
-FACE_SYNC_INTERVAL_SECONDS=30
+API_URL=https://ispevolution.com.br/vip/api/v1
+ACCESS_POINT=ENTRADA_PRINCIPAL
+DEVICE_KEY=replace-with-device-key
+ENROLLMENT_DEVICE_KEY=replace-with-enrollment-key
 ```
-
-`DEVICE_ID=0` desabilita gravacao de access_events.
 
 ## Estrutura
 
@@ -63,17 +57,13 @@ src/reconhecimento/
 ├── camera/
 │   └── capture.py          # Camera via OpenCV
 ├── database/
-│   └── repository.py       # MySQL: embeddings, revalidation, access_events
+│   └── repository.py       # MySQL: convidados pendentes de enrollment
 ├── recognition/
 │   ├── detector.py         # Deteccao de rostos (InsightFace buffalo_l, detection only)
 │   ├── embedder.py         # Geracao de embedding L2 (ArcFace ONNX direto)
-│   ├── matcher.py          # FaceIndex NumPy (busca cosseno exata)
-│   ├── confirmation.py     # 5 observacoes consecutivas
-│   └── guard.py            # Cooldown por pessoa
-├── sync/
-│   └── face_sync.py        # Sincronizacao periodica MySQL -> index
+│   └── quality.py          # iluminação, nitidez e enquadramento
 ├── api/
-│   └── client.py           # Legado (nao usado no fluxo local)
+│   └── client.py           # Reconhecimento e enrollment na API VIP
 └── recognize.py            # Loop principal
 ```
 
@@ -94,12 +84,14 @@ STATION_1_CAMERA_INDEX=0
 STATION_1_DISPLAY_INDEX=0
 STATION_1_DEVICE_ID=0
 STATION_1_DIRECTION=ENTRY
-STATION_1_ACCESS_POINT=VIP_ENTRANCE_01
+STATION_1_ACCESS_POINT=ENTRADA_PRINCIPAL
+STATION_1_DEVICE_KEY=replace-with-entry-device-key
 STATION_2_CAMERA_INDEX=1
 STATION_2_DISPLAY_INDEX=1
 STATION_2_DEVICE_ID=0
 STATION_2_DIRECTION=EXIT
-STATION_2_ACCESS_POINT=VIP_EXIT_01
+STATION_2_ACCESS_POINT=SAIDA_PRINCIPAL
+STATION_2_DEVICE_KEY=replace-with-exit-device-key
 ```
 
 Depois inicie as duas estações com:
@@ -111,8 +103,8 @@ reconhecer-duplo
 Cada estação roda em um processo isolado. Se uma câmera apresentar falha, a
 outra permanece disponível. O inicializador bloqueia câmera ou monitor duplicado
 e avisa quando o segundo monitor não está habilitado no Windows. Para registrar
-os eventos no banco, substitua os zeros por dois IDs válidos e distintos da
-tabela `access_control_devices`. O enrollment automático roda somente na estação
+as decisões na API, configure uma chave técnica diferente para cada estação.
+O enrollment automático roda somente na estação
 1, evitando que as duas instâncias processem a mesma fotografia simultaneamente.
 Os blocos `STATION_1_*` e `STATION_2_*` podem ser invertidos livremente: webcam,
 monitor, função e ponto de acesso sempre permanecem associados no mesmo bloco.
@@ -131,8 +123,8 @@ Estados da UI:
 - Modulos: deteccao (FaceAnalysis) + reconhecimento (ArcFace ONNX direto).
 - Entrada do detector: 320x320.
 - Embedding esperado: 512 dimensoes, normalizado em L2.
-- Comparacao local: produto escalar/cosseno entre vetores normalizados.
-- Confirmacao: 5 observacoes consecutivas da mesma identidade.
+- Comparação: produto escalar/cosseno no backend contra o mesmo banco do Portal VIP.
+- Confirmação local: média normalizada de 5 amostras boas antes de uma única chamada à API.
 - Cooldown local: 10 segundos por Guest e 10 segundos para desconhecido.
 
 O reconhecimento e 100% local. Nao existe chamada HTTP para reconhecimento.

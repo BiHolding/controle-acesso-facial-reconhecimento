@@ -59,7 +59,7 @@ def station_configs_from_env() -> tuple[StationConfig, StationConfig]:
             display_index=_non_negative_int("STATION_1_DISPLAY_INDEX", 0),
             device_id=_non_negative_int("STATION_1_DEVICE_ID", 0),
             direction=_direction("STATION_1_DIRECTION", "ENTRY"),
-            access_point=_access_point("STATION_1_ACCESS_POINT", "VIP_ENTRANCE_01"),
+            access_point=_access_point("STATION_1_ACCESS_POINT", "ENTRADA_PRINCIPAL"),
         ),
         StationConfig(
             number=2,
@@ -67,7 +67,7 @@ def station_configs_from_env() -> tuple[StationConfig, StationConfig]:
             display_index=_non_negative_int("STATION_2_DISPLAY_INDEX", 1),
             device_id=_non_negative_int("STATION_2_DEVICE_ID", 0),
             direction=_direction("STATION_2_DIRECTION", "EXIT"),
-            access_point=_access_point("STATION_2_ACCESS_POINT", "VIP_EXIT_01"),
+            access_point=_access_point("STATION_2_ACCESS_POINT", "SAIDA_PRINCIPAL"),
         ),
     )
     if stations[0].camera_index == stations[1].camera_index:
@@ -116,6 +116,9 @@ def child_environment(station: StationConfig) -> dict[str, str]:
     environment["STATION_NUMBER"] = str(station.number)
     environment["ACCESS_DIRECTION"] = station.direction
     environment["ACCESS_POINT"] = station.access_point
+    station_key = os.getenv(f"STATION_{station.number}_DEVICE_KEY", "").strip()
+    if station_key:
+        environment["DEVICE_KEY"] = station_key
     if station.number != 1:
         # Evita que duas instâncias disputem o enrollment da mesma fotografia.
         environment["FACE_ENROLLMENT_ENABLED"] = "false"

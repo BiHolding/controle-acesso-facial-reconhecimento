@@ -344,7 +344,7 @@ class FaceRepository:
         - guest.status = completed
         - client.status = active
         - photo_reference IS NOT NULL
-        - Não existe guest_face_embeddings ativo para este guest
+        - Não existe participant_face_embeddings ativo para este guest
 
         Returns:
             Lista de dicts com guest_id e photo_reference.
@@ -359,8 +359,9 @@ class FaceRepository:
               AND g.photo_reference != ''
               AND NOT EXISTS (
                   SELECT 1
-                  FROM guest_face_embeddings gfe
-                  WHERE gfe.guest_id = g.id
+                  FROM participant_face_embeddings gfe
+                  WHERE gfe.participant_type = 'GUEST'
+                    AND gfe.participant_id = g.id
                     AND gfe.active = 1
                     AND gfe.model = %s
                     AND gfe.dimension = %s
@@ -387,8 +388,9 @@ class FaceRepository:
         """
         sql = """
             SELECT id, photo_checksum, revision
-            FROM guest_face_embeddings
-            WHERE guest_id = %s
+            FROM participant_face_embeddings
+            WHERE participant_type = 'GUEST'
+              AND participant_id = %s
               AND active = 1
               AND model = %s
               AND dimension = %s

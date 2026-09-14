@@ -5,13 +5,19 @@ Executado apenas no ciclo de sync, nunca durante matching por frame.
 """
 
 import os
-import tempfile
+import threading
+import time
 from dataclasses import dataclass
 
 import numpy as np
 from dotenv import load_dotenv
 
+from reconhecimento.bootstrap import ensure_onnxruntime_loaded
+
+ensure_onnxruntime_loaded()
+
 from reconhecimento.database.repository import FaceDatabaseError, FaceRepository
+from reconhecimento.api.client import EnrollmentClient, RecognitionApiError
 from reconhecimento.enrollment.ftp_client import (
     FtpConfig,
     FtpError,
@@ -49,11 +55,13 @@ class EnrollmentPipeline:
         detector: FaceDetector,
         embedder: FaceEmbedder,
         ftp_config: FtpConfig | None = None,
+        enrollment_client: EnrollmentClient | None = None,
     ) -> None:
         self.repository = repository
         self.detector = detector
         self.embedder = embedder
         self.ftp_config = ftp_config or FtpConfig.from_env()
+        self.enrollment_client = enrollment_client
 
     def enroll_pending_guests(self) -> list[EnrollmentResult]:
         """Enrolla todos os Guests pendentes de enrollment.
@@ -123,20 +131,7 @@ class EnrollmentPipeline:
                 )
             print(f"[ENROLL] Guest {guest_id}: imagem válida ({validation.face_count} face)")
 
-            # 4. Verifica se checksum já existe (skip se igual)
-            existing = self.repository.find_embedding_by_guest(guest_id)
-            if existing is not None:
-                existing_checksum = existing.get("photo_checksum", "")
-                if existing_checksum == validation.photo_checksum:
-                    print(f"[ENROLL] Guest {guest_id}: checksum idêntico, skip")
-                    return EnrollmentResult(
-                        guest_id=guest_id,
-                        success=True,
-                        reason="Checksum idêntico, enrollment já existe",
-                        photo_checksum=validation.photo_checksum,
-                    )
-
-            # 5. Gera embedding
+            # 4. Gera embedding
             embedding = self._generate_embedding(tmp_path)
             if embedding is None:
                 return EnrollmentResult(
@@ -146,18 +141,15 @@ class EnrollmentPipeline:
                 )
             print(f"[ENROLL] Guest {guest_id}: embedding gerado (512D)")
 
-            # 6. Persiste no banco
-            revision = 0
-            if existing is not None:
-                revision = existing.get("revision", 0) + 1
-
-            self.repository.upsert_embedding(
-                guest_id=guest_id,
-                embedding=embedding,
-                photo_checksum=validation.photo_checksum,
-                revision=revision,
+            # 5. Publica pela API, que valida a fotografia e controla revisão/auditoria
+            if self.enrollment_client is None:
+                raise RecognitionApiError("Cliente de enrollment não configurado")
+            self.enrollment_client.enroll_guest(
+                guest_id,
+                embedding,
+                validation.photo_checksum,
             )
-            print(f"[ENROLL] Guest {guest_id}: embedding persistido (rev={revision})")
+            print(f"[ENROLL] Guest {guest_id}: embedding publicado na API VIP")
 
             return EnrollmentResult(
                 guest_id=guest_id,
@@ -183,6 +175,12 @@ class EnrollmentPipeline:
                 guest_id=guest_id,
                 success=False,
                 reason=f"Banco: {exc}",
+            )
+        except RecognitionApiError as exc:
+            return EnrollmentResult(
+                guest_id=guest_id,
+                success=False,
+                reason=f"API: {exc}",
             )
         finally:
             # 7. Cleanup do arquivo temporário
@@ -227,8 +225,29 @@ class EnrollmentPipeline:
                 print("[ENROLL] Embedding com norma zero")
                 return None
 
-            return embedding
+            return (embedding / norm).astype(np.float32)
 
         except Exception as exc:
             print(f"[ENROLL] Erro ao gerar embedding: {exc}")
             return None
+
+
+class EnrollmentSyncThread(threading.Thread):
+    """Executa enrollment em background sem interferir no atendimento da estação."""
+
+    def __init__(self, pipeline: EnrollmentPipeline, interval_seconds: float = 30.0) -> None:
+        super().__init__(daemon=True, name="enrollment-sync")
+        self.pipeline = pipeline
+        self.interval_seconds = interval_seconds
+        self._stop_event = threading.Event()
+
+    def stop(self) -> None:
+        self._stop_event.set()
+
+    def run(self) -> None:
+        while not self._stop_event.is_set():
+            try:
+                self.pipeline.enroll_pending_guests()
+            except Exception as exc:
+                print(f"[WARN] Falha no ciclo de enrollment: {exc}")
+            self._stop_event.wait(self.interval_seconds)

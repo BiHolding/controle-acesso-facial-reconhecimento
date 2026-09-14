@@ -23,6 +23,8 @@ class DualLauncherConfigurationTest(unittest.TestCase):
             (1, 1, "EXIT"),
             (second.camera_index, second.display_index, second.direction),
         )
+        self.assertEqual("ENTRADA_PRINCIPAL", first.access_point)
+        self.assertEqual("SAIDA_PRINCIPAL", second.access_point)
 
     @patch.dict(os.environ, {"STATION_2_CAMERA_INDEX": "0"}, clear=True)
     def test_rejects_the_same_camera_for_both_stations(self):
@@ -95,6 +97,18 @@ class DualLauncherConfigurationTest(unittest.TestCase):
         )
 
         self.assertEqual("true", environment["FACE_ENROLLMENT_ENABLED"])
+
+    @patch.dict(
+        os.environ,
+        {"STATION_1_DEVICE_KEY": "entry-key", "DEVICE_KEY": "fallback-key"},
+        clear=True,
+    )
+    def test_station_receives_its_own_api_key(self):
+        environment = child_environment(
+            StationConfig(1, 0, 0, 11, "ENTRY", "ENTRADA_PRINCIPAL")
+        )
+
+        self.assertEqual("entry-key", environment["DEVICE_KEY"])
 
 
 if __name__ == "__main__":

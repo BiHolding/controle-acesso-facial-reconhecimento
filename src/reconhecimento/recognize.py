@@ -1,11 +1,11 @@
-"""Loop principal de reconhecimento facial — local-first.
+"""Loop principal de reconhecimento facial integrado à API VIP.
 
 Fluxo:
   1. Captura frame da câmera
   2. A cada N frames, envia para o worker em background
   3. Worker detecta faces, gera embeddings
-  4. Matching local via FaceIndex (NumPy cosine)
-  5. Revalidação no MySQL antes de allowed=true
+  4. Confirma estabilidade em cinco amostras e calcula um embedding médio
+  5. A API VIP identifica e registra entrada/saída atomicamente
   6. Badge verde/vermelho é exibido na janela por 3 segundos
 """
 import os
@@ -357,9 +357,9 @@ class RecognitionWorker(threading.Thread):
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main() -> None:
-    from reconhecimento.recognition.matcher import InMemoryFaceIndex
-    from reconhecimento.sync.face_sync import FaceSyncThread
+    from reconhecimento.api.client import AccessControlClient, EnrollmentClient, RecognitionApiError
     from reconhecimento.display import run_display
+    from reconhecimento.enrollment.pipeline import EnrollmentPipeline, EnrollmentSyncThread
 
     load_dotenv()
     try:
@@ -375,37 +375,66 @@ def main() -> None:
     embedder = FaceEmbedder()
     guard    = AccessEventGuard(cooldown_seconds=10.0, unknown_cooldown_seconds=10.0)
 
-    # Database + Index + Sync
-    threshold = float(os.getenv("FACE_MATCH_THRESHOLD", "0.60"))
-    repository = FaceRepository()
-    index = InMemoryFaceIndex(threshold=threshold)
-    sync = FaceSyncThread(repository=repository, index=index)
-    sync.start()
+    try:
+        api_client = AccessControlClient(
+            api_url=os.getenv("API_URL", ""),
+            device_key=os.getenv("DEVICE_KEY", ""),
+            access_point=os.getenv("ACCESS_POINT", ""),
+        )
+    except RecognitionApiError as exc:
+        print(f"[CONFIG] {exc}")
+        raise SystemExit(2) from None
 
-    # Espera sync inicial (com timeout)
-    print("[INIT] Aguardando sincronizacao inicial do MySQL...")
-    sync.join(timeout=10.0)
-    if sync.last_sync_count == 0:
-        print("[INIT] AVISO: Nenhum embedding carregado. Verifique o banco de dados.")
+    print(f"[CONFIG] API VIP online | Ponto: {api_client.access_point}")
 
-    # Funcao de reconhecimento local
-    recognize_fn = _make_local_recognize(index, repository, sync)
-
-    print(f"[CONFIG] Threshold: {threshold} | Sync: {sync.interval_seconds}s")
+    enrollment_thread = None
+    enrollment_client = None
+    repository = None
+    enrollment_enabled = os.getenv("FACE_ENROLLMENT_ENABLED", "false").lower() in {
+        "1", "true", "yes",
+    }
+    if enrollment_enabled:
+        try:
+            enrollment_client = EnrollmentClient(
+                api_url=os.getenv("API_URL", ""),
+                device_key=os.getenv("ENROLLMENT_DEVICE_KEY", ""),
+            )
+            repository = FaceRepository()
+            enrollment_pipeline = EnrollmentPipeline(
+                repository=repository,
+                detector=FaceDetector(),
+                embedder=FaceEmbedder(),
+                enrollment_client=enrollment_client,
+            )
+            enrollment_thread = EnrollmentSyncThread(
+                enrollment_pipeline,
+                interval_seconds=float(os.getenv("FACE_ENROLLMENT_INTERVAL_SECONDS", "30")),
+            )
+            enrollment_thread.start()
+            print("[CONFIG] Enrollment automático de convidados ativo")
+        except (RecognitionApiError, FaceDatabaseError, ValueError) as exc:
+            api_client.close()
+            print(f"[CONFIG] Enrollment inválido: {exc}")
+            raise SystemExit(2) from None
 
     # Interface Qt portrait
     exit_code = run_display(
         detector=detector,
         embedder=embedder,
         guard=guard,
-        recognize_fn=recognize_fn,
-        repository=repository,
-        sync_thread=sync,
+        recognize_fn=api_client.recognize,
         camera_index=camera_index,
         access_direction=access_direction,
     )
 
-    sync.stop()
+    if enrollment_thread is not None:
+        enrollment_thread.stop()
+        enrollment_thread.join(timeout=3.0)
+    if enrollment_client is not None:
+        enrollment_client.close()
+    if repository is not None:
+        repository.close()
+    api_client.close()
     sys.exit(exit_code)
 
 

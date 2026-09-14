@@ -9,6 +9,7 @@ from __future__ import annotations
 import os
 import sys
 import time
+from collections import deque
 from dataclasses import dataclass
 
 import cv2
@@ -94,6 +95,7 @@ class DisplayResult:
     similarity: float | None = None
     message: str | None = None
     reason: str | None = None
+    direction: str | None = None
 
 
 # ── Worker de reconhecimento (thread) ──────────────────────────────────────────
@@ -123,9 +125,8 @@ class RecognitionWorkerThread(QThread):
         self._frame_lock = __import__("threading").Lock()
         self._frame_event = __import__("threading").Event()
 
-        from reconhecimento.recognition.confirmation import RecognitionConfirmation
-        self._confirmations: dict[int, RecognitionConfirmation] = {}
-        self._unknown_frames = 0
+        self._embedding_samples: deque[np.ndarray] = deque(maxlen=5)
+        self._blocked_until = 0.0
         self._show_secs = 3.0
         self._unknown_required = 10
         self._guidance_reason: str | None = None
@@ -163,98 +164,77 @@ class RecognitionWorkerThread(QThread):
                 self.result_ready.emit(DisplayResult(state="error"))
 
     def _process(self, frame):
+        if time.monotonic() < self._blocked_until:
+            return
+
         faces = self.detector.detect(frame)
         n_faces = len(faces)
 
-        for idx in list(self._confirmations.keys()):
-            if idx >= n_faces:
-                del self._confirmations[idx]
-
         if n_faces == 0:
-            self._unknown_frames = 0
-            self._confirmations.clear()
+            self._embedding_samples.clear()
             self._guide("NO_FACE", "Posicione-se diante da câmera e olhe para a tela.", required_frames=5)
             return
 
         if n_faces > 1:
-            self._confirmations.clear()
-            self._unknown_frames = 0
+            self._embedding_samples.clear()
             self._guide("MULTIPLE_FACES", "Vamos por uma pessoa de cada vez.")
             return
 
         quality = self._quality.assess(frame, faces[0])
         if not quality.acceptable:
-            self._confirmations.clear()
-            self._unknown_frames = 0
+            self._embedding_samples.clear()
             self._guide(quality.reason, quality.message)
             return
 
         self._clear_guidance()
-
-        any_recognized = False
-        recognize_failed = False
-
-        for idx, face in enumerate(faces):
-            if idx not in self._confirmations:
-                from reconhecimento.recognition.confirmation import RecognitionConfirmation
-                self._confirmations[idx] = RecognitionConfirmation(required_frames=5)
-
-            embedding = self.embedder.generate(face, frame)
-
-            try:
-                if self.recognize_fn is None:
-                    raise RuntimeError("Funcao de reconhecimento nao configurada")
-                local_result = self.recognize_fn(embedding)
-            except Exception as exc:
-                print(f"[WARN] Falha no reconhecimento: {exc}")
-                recognize_failed = True
-                continue
-
-            raw_guest_id = local_result.guest_id if local_result.recognized else None
-            any_recognized = any_recognized or local_result.recognized
-            confirmed = self._confirmations[idx].update(raw_guest_id)
-
-            if confirmed is None:
-                continue
-
-            if raw_guest_id != confirmed:
-                continue
-
-            name = local_result.name or confirmed
-            sim = local_result.similarity
-
-            validation_errors = {"DB_UNAVAILABLE", "REFERENCE_STALE"}
-            if local_result.allowed:
-                state = "authorized"
-            elif local_result.reason in validation_errors:
-                state = "error"
-            else:
-                state = "denied"
+        embedding = np.asarray(self.embedder.generate(faces[0], frame), dtype=np.float32)
+        self._embedding_samples.append(embedding)
+        if len(self._embedding_samples) == 1:
             self.result_ready.emit(DisplayResult(
-                state=state,
-                name=name if local_result.allowed else None,
-                similarity=sim,
+                state="validating",
+                message="Identidade em validação. Mantenha o olhar por um instante.",
             ))
-
-            if not self.guard.can_register(confirmed):
-                continue
-
-            status = "OK" if local_result.allowed else "NEGADO"
-            print(f"[{status}] {local_result.reason}")
-
-        if recognize_failed:
-            self.result_ready.emit(DisplayState.error())
+        if len(self._embedding_samples) < self._embedding_samples.maxlen:
             return
 
-        if not any_recognized:
-            self._unknown_frames += 1
-            if self._unknown_frames >= self._unknown_required:
-                self.result_ready.emit(DisplayResult(state="unknown"))
-                self._unknown_frames = 0
-                if self.guard.can_register(None):
-                    print("[NEGADO] ROSTO DESCONHECIDO")
+        probe = np.mean(np.stack(tuple(self._embedding_samples)), axis=0)
+        self._embedding_samples.clear()
+        norm = float(np.linalg.norm(probe))
+        if not np.isfinite(norm) or norm <= np.finfo(np.float32).eps:
+            self.result_ready.emit(DisplayState.error())
+            self._blocked_until = time.monotonic() + self._show_secs
+            return
+        probe = (probe / norm).astype(np.float32)
+
+        try:
+            if self.recognize_fn is None:
+                raise RuntimeError("Funcao de reconhecimento nao configurada")
+            result = self.recognize_fn(probe)
+        except Exception as exc:
+            print(f"[WARN] Falha no reconhecimento: {exc}")
+            self.result_ready.emit(DisplayState.error())
+            self._blocked_until = time.monotonic() + self._show_secs
+            return
+
+        self._blocked_until = time.monotonic() + self._show_secs
+        if result.allowed:
+            state = "authorized"
+        elif not result.recognized and result.reason in {"UNKNOWN_FACE", "INDEX_UNAVAILABLE"}:
+            state = "unknown"
+        elif result.reason in {"DB_UNAVAILABLE", "REFERENCE_STALE", "SERVICE_UNAVAILABLE"}:
+            state = "error"
         else:
-            self._unknown_frames = 0
+            state = "denied"
+
+        self.result_ready.emit(DisplayResult(
+            state=state,
+            name=result.name if result.allowed else None,
+            similarity=result.similarity,
+            reason=result.reason,
+            direction=result.direction,
+        ))
+        status = "OK" if result.allowed else "NEGADO"
+        print(f"[{status}] {result.reason}")
 
     def _guide(self, reason: str, message: str, *, required_frames: int = 3) -> None:
         """Evita mensagens piscando quando uma métrica oscila entre frames."""
@@ -416,7 +396,7 @@ class StatusWidget(QLabel):
 
     def set_status(self, state: str, name: str | None = None, message: str | None = None):
         if state == "authorized":
-            self.setText("Aproveite a experiência VIP.\nPode entrar.")
+            self.setText(message or "Aproveite a experiência VIP.\nPode entrar.")
             self.setStyleSheet(f"""
                 color: {ACCENT_GREEN};
                 font-size: 18px;
@@ -424,7 +404,7 @@ class StatusWidget(QLabel):
                 padding: 12px;
             """)
         elif state == "denied":
-            self.setText("Procure nossa equipe para verificar seu cadastro.")
+            self.setText(message or "Procure nossa equipe para verificar seu cadastro.")
             self.setStyleSheet(f"""
                 color: {ACCENT_RED};
                 font-size: 18px;
@@ -476,9 +456,11 @@ class SuccessOverlay(QWidget):
         super().__init__(parent)
         self.setVisible(False)
         self._name = ""
+        self._direction = "ENTRY"
 
-    def show_success(self, name: str):
+    def show_success(self, name: str, direction: str = "ENTRY"):
         self._name = _first_name(name)
+        self._direction = direction
         self.setVisible(True)
         self.update()
 
@@ -517,19 +499,21 @@ class SuccessOverlay(QWidget):
         content_margin = max(16, round(w * 0.05))
         text_width = w - content_margin * 2
         first_name = self._name
-        font_large = self._fitted_font(
-            "ACESSO LIBERADO", max(36, h // 20), 24, text_width, QFont.Bold
-        )
+        title = "SAÍDA REGISTRADA" if self._direction == "EXIT" else "ACESSO LIBERADO"
+        font_large = self._fitted_font(title, max(36, h // 20), 24, text_width, QFont.Bold)
         painter.setFont(font_large)
         painter.setPen(QColor(FG_PRIMARY))
         painter.drawText(
             QRect(content_margin, cy + radius + 30, text_width, h // 6),
             Qt.AlignCenter | Qt.TextWordWrap,
-            "ACESSO LIBERADO",
+            title,
         )
 
         # Nome
-        welcome = f"Bem-vindo, {first_name}!" if first_name else "Bem-vindo!"
+        if self._direction == "EXIT":
+            welcome = f"Até breve, {first_name}!" if first_name else "Até breve!"
+        else:
+            welcome = f"Bem-vindo, {first_name}!" if first_name else "Bem-vindo!"
         font_name = self._fitted_font(
             welcome, max(48, h // 14), 24, text_width, QFont.Bold
         )
@@ -548,7 +532,7 @@ class SuccessOverlay(QWidget):
         painter.drawText(
             QRect(content_margin, cy + radius + 30 + h // 6 + h // 8, text_width, h // 10),
             Qt.AlignCenter | Qt.TextWordWrap,
-            "Aproveite a experiência VIP.",
+            "Obrigado pela visita." if self._direction == "EXIT" else "Aproveite a experiência VIP.",
         )
 
         font_action = QFont("Segoe UI", max(22, h // 28), QFont.Bold)
@@ -557,7 +541,7 @@ class SuccessOverlay(QWidget):
         painter.drawText(
             QRect(content_margin, cy + radius + 30 + h // 6 + h // 8 + h // 10, text_width, h // 10),
             Qt.AlignCenter | Qt.TextWordWrap,
-            "Pode entrar.",
+            "Saída confirmada." if self._direction == "EXIT" else "Pode entrar.",
         )
 
         painter.end()
@@ -844,17 +828,32 @@ class PortraitWindow(QMainWindow):
         if state == "authorized":
             self._current_state = "authorized"
             self._success_until = time.monotonic() + 2.0
-            self._success_overlay.show_success(result.name or "")
-            self._status.set_status("authorized", result.name)
-            self._set_instruction("ACESSO LIBERADO", ACCENT_GREEN, 22, 700)
+            self._success_overlay.show_success(result.name or "", result.direction or self._access_direction)
+            success_message = (
+                "Saída confirmada. Até breve."
+                if result.direction == "EXIT"
+                else "Aproveite a experiência VIP. Pode entrar."
+            )
+            self._status.set_status("authorized", result.name, success_message)
+            success_text = "SAÍDA REGISTRADA" if result.direction == "EXIT" else "ENTRADA REGISTRADA"
+            self._set_instruction(success_text, ACCENT_GREEN, 22, 700)
             show_ms = AUTHORIZED_SHOW_MS
 
         elif state == "denied":
             self._current_state = "denied"
             self._success_until = time.monotonic() + 3.0
             self._success_overlay.hide_success()
-            self._status.set_status("denied")
-            self._set_instruction("Acesso não disponível", ACCENT_RED)
+            denied_messages = {
+                "DUPLICATE_ENTRY": "Sua entrada já está registrada",
+                "DUPLICATE_EXIT": "Nenhuma entrada em aberto foi encontrada",
+                "CAPACITY_FULL": "A Sala VIP atingiu a capacidade máxima",
+                "CLIENT_INACTIVE": "Convite temporariamente indisponível",
+                "GUEST_NOT_ELIGIBLE": "Convite não disponível para acesso",
+                "CLIENT_NOT_ELIGIBLE": "Acesso não disponível para este cadastro",
+            }
+            message = denied_messages.get(result.reason or "", "Acesso não disponível")
+            self._status.set_status("denied", message=message)
+            self._set_instruction(message, ACCENT_RED)
             show_ms = DEFAULT_RESULT_SHOW_MS
 
         elif state == "unknown":

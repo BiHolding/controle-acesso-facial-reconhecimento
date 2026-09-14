@@ -26,6 +26,7 @@ class EnrollmentPipelineTest(unittest.TestCase):
         self.repository = MagicMock()
         self.detector = MagicMock()
         self.embedder = MagicMock()
+        self.enrollment_client = MagicMock()
         self.ftp_config = MagicMock()
         self.ftp_config.host = "ftp.test.com"
         self.ftp_config.port = 21
@@ -38,6 +39,7 @@ class EnrollmentPipelineTest(unittest.TestCase):
             detector=self.detector,
             embedder=self.embedder,
             ftp_config=self.ftp_config,
+            enrollment_client=self.enrollment_client,
         )
 
     def test_no_pending_guests(self) -> None:
@@ -54,8 +56,6 @@ class EnrollmentPipelineTest(unittest.TestCase):
         ]
 
         # Mock no existing embedding
-        self.repository.find_embedding_by_guest.return_value = None
-
         # Mock FTP download
         with patch(
             "reconhecimento.enrollment.pipeline.download_photo_temp"
@@ -96,20 +96,17 @@ class EnrollmentPipelineTest(unittest.TestCase):
                 self.assertEqual(len(results), 1)
                 self.assertTrue(results[0].success)
                 self.assertEqual(results[0].guest_id, "1")
-                self.repository.upsert_embedding.assert_called_once()
+                self.enrollment_client.enroll_guest.assert_called_once()
+                guest_id, sent_embedding, checksum = self.enrollment_client.enroll_guest.call_args.args
+                self.assertEqual("1", guest_id)
+                np.testing.assert_allclose(embedding, sent_embedding)
+                self.assertEqual("abc123", checksum)
 
-    def test_enrollment_skip_same_checksum(self) -> None:
+    def test_enrollment_republishes_when_repository_marks_guest_pending(self) -> None:
         # Mock pending guests
         self.repository.find_pending_enrollment.return_value = [
             {"guest_id": "1", "photo_reference": "guests/test.jpg"}
         ]
-
-        # Mock existing embedding with same checksum
-        self.repository.find_embedding_by_guest.return_value = {
-            "id": 1,
-            "photo_checksum": "abc123",
-            "revision": 0,
-        }
 
         # Mock FTP download
         with patch(
@@ -134,15 +131,15 @@ class EnrollmentPipelineTest(unittest.TestCase):
                 mock_validate.return_value = ImageValidationResult.success(
                     1, "abc123"
                 )
+                self.embedder.generate.return_value = _unit_embedding()
+                self.detector.detect.return_value = [MagicMock()]
 
                 # Run enrollment
                 results = self.pipeline.enroll_pending_guests()
 
-                # Verify - should skip, not call upsert
                 self.assertEqual(len(results), 1)
                 self.assertTrue(results[0].success)
-                self.assertIn("idêntico", results[0].reason)
-                self.repository.upsert_embedding.assert_not_called()
+                self.enrollment_client.enroll_guest.assert_called_once()
 
     def test_enrollment_ftp_failure(self) -> None:
         self.repository.find_pending_enrollment.return_value = [
@@ -202,8 +199,6 @@ class EnrollmentPipelineTest(unittest.TestCase):
             {"guest_id": "1", "photo_reference": "guests/test.jpg"}
         ]
 
-        self.repository.find_embedding_by_guest.return_value = None
-
         with patch(
             "reconhecimento.enrollment.pipeline.download_photo_temp"
         ) as mock_download:
@@ -229,15 +224,14 @@ class EnrollmentPipelineTest(unittest.TestCase):
                 self.embedder.generate.return_value = _unit_embedding()
                 self.detector.detect.return_value = [MagicMock()]
 
-                self.repository.upsert_embedding.side_effect = FaceDatabaseError(
-                    "DB error"
-                )
+                from reconhecimento.api.client import ApiUnavailableError
+                self.enrollment_client.enroll_guest.side_effect = ApiUnavailableError("offline")
 
                 results = self.pipeline.enroll_pending_guests()
 
                 self.assertEqual(len(results), 1)
                 self.assertFalse(results[0].success)
-                self.assertIn("Banco", results[0].reason)
+                self.assertIn("API", results[0].reason)
 
     def test_enrollment_temp_cleanup(self) -> None:
         self.repository.find_pending_enrollment.return_value = [

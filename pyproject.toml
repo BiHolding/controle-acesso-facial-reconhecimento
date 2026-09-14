@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "controle-acesso-facial-reconhecimento"
 version = "0.1.0"
-description = "Cliente local de reconhecimento facial — matching local MySQL + InsightFace"
+description = "Cliente de reconhecimento facial integrado à API do Portal VIP"
 requires-python = ">=3.12"
 
 dependencies = [

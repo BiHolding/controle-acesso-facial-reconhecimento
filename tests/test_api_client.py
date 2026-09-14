@@ -9,6 +9,7 @@ from reconhecimento.api.client import (
     ApiAuthenticationError,
     ApiResponseError,
     ApiUnavailableError,
+    EnrollmentClient,
 )
 
 
@@ -22,10 +23,14 @@ def response_body(**overrides: object) -> dict:
     data = {
         "recognized": True,
         "allowed": True,
+        "participantType": "guest",
+        "participantId": "1",
         "guestId": "1",
+        "userId": None,
         "name": "Guest Teste",
         "similarity": 0.82,
         "reason": "AUTHORIZED",
+        "direction": "ENTRY",
     }
     data.update(overrides)
     return {"success": True, "data": data}
@@ -72,10 +77,14 @@ class AccessControlClientTest(unittest.TestCase):
         body = response_body(
             recognized=False,
             allowed=False,
+            participantType=None,
+            participantId=None,
             guestId=None,
+            userId=None,
             name=None,
             similarity=None,
             reason="UNKNOWN_FACE",
+            direction=None,
         )
         client = self.make_client(lambda _request: httpx.Response(200, json=body))
 
@@ -130,6 +139,33 @@ class AccessControlClientTest(unittest.TestCase):
         with self.assertRaises(ApiResponseError):
             client.recognize(unit_embedding())
 
+    def test_client_participant(self) -> None:
+        body = response_body(
+            participantType="client",
+            participantId="7",
+            guestId=None,
+            userId="7",
+            name="Cliente Teste",
+            direction="EXIT",
+        )
+        client = self.make_client(lambda _request: httpx.Response(200, json=body))
+
+        result = client.recognize(unit_embedding())
+
+        self.assertEqual(result.participant_type, "client")
+        self.assertEqual(result.user_id, "7")
+        self.assertEqual(result.direction, "EXIT")
+
+    def test_known_denial_accepts_backend_reason_without_name(self) -> None:
+        body = response_body(allowed=False, reason="DUPLICATE_ENTRY", name=None)
+        client = self.make_client(lambda _request: httpx.Response(200, json=body))
+
+        result = client.recognize(unit_embedding())
+
+        self.assertTrue(result.recognized)
+        self.assertFalse(result.allowed)
+        self.assertEqual(result.reason, "DUPLICATE_ENTRY")
+
     def test_unexpected_personal_data_fails_closed(self) -> None:
         body = response_body()
         body["data"]["email"] = "not-needed@example.com"
@@ -151,6 +187,40 @@ class AccessControlClientTest(unittest.TestCase):
 
         with self.assertRaises(ApiResponseError):
             client.recognize(unit_embedding())
+
+
+class EnrollmentClientTest(unittest.TestCase):
+    def test_publishes_guest_embedding_with_backend_contract(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            self.assertEqual(request.method, "PUT")
+            self.assertEqual(request.url.path, "/vip/api/v1/access-control/guests/42/embedding")
+            self.assertEqual(request.headers["X-Device-Key"], "enrollment-secret")
+            payload = json.loads(request.content)
+            self.assertEqual(payload["model"], "buffalo_l")
+            self.assertEqual(payload["dimension"], 512)
+            self.assertEqual(payload["normalization"], "l2")
+            self.assertEqual(len(payload["embedding"]), 512)
+            return httpx.Response(200, json={"success": True, "data": {}})
+
+        client = EnrollmentClient(
+            "https://ispevolution.com.br/vip/api/v1",
+            "enrollment-secret",
+            transport=httpx.MockTransport(handler),
+        )
+        self.addCleanup(client.close)
+
+        client.enroll_guest("42", unit_embedding(), "a" * 64)
+
+    def test_rejects_invalid_checksum_before_network(self) -> None:
+        client = EnrollmentClient(
+            "https://ispevolution.com.br/vip/api/v1",
+            "enrollment-secret",
+            transport=httpx.MockTransport(lambda _request: httpx.Response(500)),
+        )
+        self.addCleanup(client.close)
+
+        with self.assertRaises(ValueError):
+            client.enroll_guest("42", unit_embedding(), "invalid")
 
 
 if __name__ == "__main__":
