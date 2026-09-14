@@ -222,6 +222,15 @@ class EnrollmentClientTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             client.enroll_guest("42", unit_embedding(), "invalid")
 
+    def test_publishes_client_embedding_with_participant_contract(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            self.assertEqual(request.url.path, "/api/v1/access-control/participants/client/7/embedding")
+            return httpx.Response(200, json={"success": True, "data": {}})
+
+        client = EnrollmentClient("https://ispevolution.com.br/api/v1", "enrollment-secret", transport=httpx.MockTransport(handler))
+        self.addCleanup(client.close)
+        client.enroll_participant("client", "7", unit_embedding(), "b" * 64)
+
 
 if __name__ == "__main__":
     unittest.main()

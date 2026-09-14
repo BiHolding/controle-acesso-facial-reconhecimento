@@ -41,6 +41,7 @@ class EnrollmentResult:
     success: bool
     reason: str
     photo_checksum: str = ""
+    participant_type: str = "GUEST"
 
 
 class EnrollmentPipeline:
@@ -88,11 +89,12 @@ class EnrollmentPipeline:
         results = []
 
         for guest_info in pending:
-            guest_id = guest_info["guest_id"]
+            guest_id = guest_info.get("participant_id", guest_info.get("guest_id"))
+            participant_type = guest_info.get("participant_type", "GUEST")
             photo_reference = guest_info["photo_reference"]
 
             try:
-                result = self._enroll_single_guest(guest_id, photo_reference)
+                result = self._enroll_single_guest(guest_id, photo_reference, participant_type)
                 results.append(result)
             except Exception as exc:
                 print(f"[ENROLL] Erro inesperado no guest {guest_id}: {exc}")
@@ -113,7 +115,7 @@ class EnrollmentPipeline:
         return results
 
     def _enroll_single_guest(
-        self, guest_id: str, photo_reference: str
+        self, guest_id: str, photo_reference: str, participant_type: str = "GUEST"
     ) -> EnrollmentResult:
         """Enrolla um único Guest.
 
@@ -149,11 +151,12 @@ class EnrollmentPipeline:
             # 5. Publica pela API, que valida a fotografia e controla revisão/auditoria
             if self.enrollment_client is None:
                 raise RecognitionApiError("Cliente de enrollment não configurado")
-            self.enrollment_client.enroll_guest(
-                guest_id,
-                embedding,
-                validation.photo_checksum,
-            )
+            if participant_type == "GUEST":
+                self.enrollment_client.enroll_guest(guest_id, embedding, validation.photo_checksum)
+            else:
+                self.enrollment_client.enroll_participant(
+                    participant_type.lower(), guest_id, embedding, validation.photo_checksum
+                )
             print(f"[ENROLL] Guest {guest_id}: embedding publicado na API VIP")
 
             return EnrollmentResult(
@@ -161,6 +164,7 @@ class EnrollmentPipeline:
                 success=True,
                 reason="Enrollment concluído",
                 photo_checksum=validation.photo_checksum,
+                participant_type=participant_type,
             )
 
         except FtpError as exc:

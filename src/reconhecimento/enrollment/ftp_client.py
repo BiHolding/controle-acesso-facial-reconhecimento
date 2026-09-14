@@ -69,13 +69,14 @@ def validate_photo_reference(photo_reference: str) -> str:
     normalized = photo_reference.replace("\\", "/").strip("/")
 
     # Verifica prefixo
-    if not normalized.startswith("guests/"):
+    prefix = next((value for value in ("guests", "clients") if normalized.startswith(value + "/")), None)
+    if prefix is None:
         raise PhotoValidationError(
-            f"photo_reference deve começar com 'guests/': {photo_reference}"
+            f"photo_reference deve começar com 'guests/' ou 'clients/': {photo_reference}"
         )
 
     # Extrai o path relativo após guests/
-    relative = normalized[len("guests/"):]
+    relative = normalized[len(prefix) + 1:]
     if not relative:
         raise PhotoValidationError("photo_reference sem filename")
 
@@ -113,9 +114,15 @@ def resolve_ftp_path(photo_reference: str, base_path: str) -> str:
     Mapeia guests/<arquivo> para base_path/<arquivo>.
     """
     filename = validate_photo_reference(photo_reference)
+    storage = photo_reference.replace("\\", "/").strip("/").split("/", 1)[0]
     # Normaliza base_path
     normalized_base = base_path.strip("/")
-    return f"{normalized_base}/{filename}"
+    base = PurePosixPath(normalized_base)
+    if base.name in {"guests", "clients"}:
+        base = base.parent / storage
+    else:
+        base = base / storage
+    return f"{base.as_posix()}/{filename}"
 
 
 def download_photo_temp(

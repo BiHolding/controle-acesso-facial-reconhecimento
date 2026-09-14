@@ -27,6 +27,10 @@ class ValidatePhotoReferenceTest(unittest.TestCase):
         result = validate_photo_reference("guests/abc123.jpeg")
         self.assertEqual(result, "abc123.jpeg")
 
+    def test_valid_client_photo(self) -> None:
+        result = validate_photo_reference("clients/client123.jpg")
+        self.assertEqual(result, "client123.jpg")
+
     def test_valid_png(self) -> None:
         result = validate_photo_reference("guests/abc123.png")
         self.assertEqual(result, "abc123.png")
@@ -110,6 +114,10 @@ class ResolveFtpPathTest(unittest.TestCase):
     def test_base_with_slashes(self) -> None:
         result = resolve_ftp_path("guests/abc.jpg", "/vip-backend/writable/guests/")
         self.assertEqual(result, "vip-backend/writable/guests/abc.jpg")
+
+    def test_client_resolution_uses_sibling_storage(self) -> None:
+        result = resolve_ftp_path("clients/person.jpg", "vip-backend/writable/guests")
+        self.assertEqual(result, "vip-backend/writable/clients/person.jpg")
 
     def test_invalid_path_raises(self) -> None:
         with self.assertRaises(PhotoValidationError):

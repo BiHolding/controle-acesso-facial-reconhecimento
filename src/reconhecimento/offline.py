@@ -163,8 +163,9 @@ class OfflineAccessStore:
                 );
             """)
 
-    def record_offline(self, guest_id: str, access_point: str, direction: str) -> OfflineDecision:
-        participant_key = f"GUEST:{guest_id}"
+    def record_offline(self, participant_key: str, access_point: str, direction: str) -> OfflineDecision:
+        if ":" not in participant_key:
+            participant_key = f"GUEST:{participant_key}"
         now = datetime.now(timezone.utc).isoformat()
         with self._lock, self._connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
@@ -202,7 +203,9 @@ class OfflineAccessStore:
         return OfflineDecision(True, "OFFLINE_AUTHORIZED")
 
     def reconcile_online(self, result: RecognitionResult) -> None:
-        if result.guest_id is None or result.direction not in {"ENTRY", "EXIT"}:
+        participant_type = result.participant_type or ("guest" if result.guest_id is not None else None)
+        participant_id = result.participant_id or result.guest_id
+        if participant_id is None or participant_type not in {"guest", "client"} or result.direction not in {"ENTRY", "EXIT"}:
             return
         inside: int | None = None
         if result.allowed:
@@ -217,7 +220,7 @@ class OfflineAccessStore:
             connection.execute(
                 "INSERT INTO local_presence(participant_key, inside, updated_at) VALUES (?, ?, ?) "
                 "ON CONFLICT(participant_key) DO UPDATE SET inside=excluded.inside, updated_at=excluded.updated_at",
-                (f"GUEST:{result.guest_id}", inside, datetime.now(timezone.utc).isoformat()),
+                (f"{participant_type.upper()}:{participant_id}", inside, datetime.now(timezone.utc).isoformat()),
             )
 
     def next_event(self) -> sqlite3.Row | None:
@@ -270,14 +273,21 @@ class HybridRecognitionService:
     def _offline_result(self, match) -> RecognitionResult:
         if match is None:
             return RecognitionResult(False, False, "SERVICE_UNAVAILABLE")
-        decision = self.store.record_offline(match.guest_id, self.access_point, self.direction)
+        if ":" in match.guest_id:
+            participant_type, participant_id = match.guest_id.split(":", 1)
+            participant_key = match.guest_id
+        else:
+            participant_type, participant_id = "GUEST", match.guest_id
+            participant_key = f"GUEST:{participant_id}"
+        decision = self.store.record_offline(participant_key, self.access_point, self.direction)
         return RecognitionResult(
             recognized=True,
             allowed=decision.allowed,
             reason=decision.reason,
-            guest_id=match.guest_id,
-            participant_type="guest",
-            participant_id=match.guest_id,
+            guest_id=participant_id if participant_type == "GUEST" else None,
+            user_id=participant_id if participant_type == "CLIENT" else None,
+            participant_type=participant_type.lower(),
+            participant_id=participant_id,
             name=self.names().get(match.guest_id),
             similarity=match.similarity,
             direction=self.direction,
@@ -303,8 +313,8 @@ class OfflineReplayThread(threading.Thread):
             if event is None:
                 self._stop_event.wait(2.0)
                 continue
-            guest_id = str(event["participant_key"]).split(":", 1)[1]
-            cached = self.cache.load().get(guest_id)
+            participant_key = str(event["participant_key"])
+            cached = self.cache.load().get(participant_key)
             client = self.clients.get(str(event["access_point"]))
             if cached is None or client is None:
                 self._stop_event.wait(5.0)

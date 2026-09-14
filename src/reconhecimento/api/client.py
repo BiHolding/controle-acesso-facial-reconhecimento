@@ -152,9 +152,15 @@ class EnrollmentClient:
         *,
         model_version: str = "1",
     ) -> None:
+        self._enroll_at_path(f"guests/{guest_id}", guest_id, embedding, photo_checksum, model_version)
+
+    def enroll_participant(self, participant_type: str, participant_id: str, embedding: np.ndarray, photo_checksum: str, *, model_version: str = "1") -> None:
+        self._enroll_at_path(f"participants/{participant_type}/{participant_id}", participant_id, embedding, photo_checksum, model_version, participant_type)
+
+    def _enroll_at_path(self, path: str, participant_id: str, embedding: np.ndarray, photo_checksum: str, model_version: str, participant_type: str = "guest") -> None:
         vector = _validate_embedding(embedding)
-        if not re.fullmatch(r"[0-9]+", str(guest_id)):
-            raise ValueError("guest_id inválido")
+        if participant_type not in {"guest", "client"} or not re.fullmatch(r"[0-9]+", str(participant_id)):
+            raise ValueError("participante inválido")
         if not re.fullmatch(r"[a-f0-9]{64}", photo_checksum):
             raise ValueError("photo_checksum inválido")
         payload = {
@@ -167,7 +173,7 @@ class EnrollmentClient:
         }
         try:
             response = self._client.put(
-                f"{self.api_url}/access-control/guests/{guest_id}/embedding",
+                f"{self.api_url}/access-control/{path}/embedding",
                 json=payload,
                 headers={"X-Device-Key": self.device_key},
             )

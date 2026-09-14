@@ -121,6 +121,21 @@ class HybridRecognitionServiceTest(unittest.TestCase):
             client.recognize.assert_not_called()
             self.assertEqual(2, store.pending_count())
 
+    def test_authorizes_cached_client_offline_without_identity_collision(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = OfflineAccessStore(Path(directory) / "state.sqlite3", 400)
+            index = InMemoryFaceIndex(0.6)
+            index.replace({"CLIENT:42": unit_embedding()})
+            client = MagicMock()
+            client.recognize.side_effect = ApiUnavailableError("offline")
+            service = HybridRecognitionService(client, index, lambda: {"CLIENT:42": "Representante VIP"}, store, "ENTRY", "ENTRADA_PRINCIPAL")
+
+            result = service.recognize(unit_embedding())
+
+            self.assertTrue(result.allowed)
+            self.assertEqual("client", result.participant_type)
+            self.assertEqual("42", result.user_id)
+
 
 if __name__ == "__main__":
     unittest.main()

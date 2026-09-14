@@ -136,11 +136,8 @@ class FaceRepository:
             dict[guest_id] = (embedding_512_float32, guest_name)
         """
         sql = """
-            SELECT
-                gfe.participant_id AS guest_id,
-                gfe.embedding,
-                gfe.photo_checksum,
-                g.name AS guest_name
+            SELECT gfe.participant_type, gfe.participant_id,
+                gfe.embedding, gfe.photo_checksum, g.name AS participant_name
             FROM participant_face_embeddings gfe
             JOIN guests g ON g.id = gfe.participant_id
             JOIN clients c ON c.id = g.client_id
@@ -151,20 +148,33 @@ class FaceRepository:
               AND gfe.normalization = %s
               AND g.status = 'completed'
               AND c.status = 'active'
+            UNION ALL
+            SELECT gfe.participant_type, gfe.participant_id,
+                gfe.embedding, gfe.photo_checksum, u.name AS participant_name
+            FROM participant_face_embeddings gfe
+            JOIN users u ON u.id = gfe.participant_id
+            JOIN clients c ON c.id = u.client_id
+            WHERE gfe.active = 1 AND gfe.participant_type = 'CLIENT'
+              AND gfe.model = %s AND gfe.dimension = %s AND gfe.normalization = %s
+              AND u.role = 'CLIENT' AND u.active = 1 AND c.status = 'active'
         """
         try:
             conn = self._get_connection()
             with conn.cursor() as cursor:
-                cursor.execute(sql, (self.model, self.dimension, self.normalization))
+                cursor.execute(sql, (self.model, self.dimension, self.normalization, self.model, self.dimension, self.normalization))
                 rows = cursor.fetchall()
         except (pymysql.Error, FaceDatabaseError) as exc:
             raise FaceDatabaseError(f"Falha ao carregar embeddings: {exc}") from exc
 
         result: dict[str, tuple[np.ndarray, str]] = {}
         for row in rows:
-            guest_id = str(row["guest_id"])
+            participant_id = row.get("participant_id", row.get("guest_id"))
+            guest_id = (
+                f"{row['participant_type']}:{participant_id}"
+                if "participant_type" in row else str(participant_id)
+            )
             blob = row["embedding"]
-            name = row["guest_name"]
+            name = row.get("participant_name", row.get("guest_name", ""))
             embedding = self._decode_blob(blob)
             if embedding is not None:
                 result[guest_id] = (embedding, name)
@@ -353,7 +363,7 @@ class FaceRepository:
             Lista de dicts com guest_id e photo_reference.
         """
         sql = """
-            SELECT g.id AS guest_id, g.photo_reference
+            SELECT 'GUEST' AS participant_type, g.id AS participant_id, g.photo_reference
             FROM guests g
             JOIN clients c ON c.id = g.client_id
             WHERE g.status = 'completed'
@@ -370,14 +380,25 @@ class FaceRepository:
                     AND gfe.dimension = %s
                     AND gfe.normalization = %s
               )
+            UNION ALL
+            SELECT 'CLIENT' AS participant_type, u.id AS participant_id, u.photo_reference
+            FROM users u JOIN clients c ON c.id = u.client_id
+            WHERE u.role = 'CLIENT' AND u.active = 1 AND c.status = 'active'
+              AND u.photo_reference IS NOT NULL AND u.photo_reference != ''
+              AND NOT EXISTS (
+                  SELECT 1 FROM participant_face_embeddings pfe
+                  WHERE pfe.participant_type = 'CLIENT' AND pfe.participant_id = u.id
+                    AND pfe.active = 1 AND pfe.model = %s AND pfe.dimension = %s AND pfe.normalization = %s
+              )
         """
         try:
             conn = self._get_connection()
             with conn.cursor() as cursor:
-                cursor.execute(sql, (self.model, self.dimension, self.normalization))
+                cursor.execute(sql, (self.model, self.dimension, self.normalization, self.model, self.dimension, self.normalization))
                 rows = cursor.fetchall()
             return [
-                {"guest_id": str(row["guest_id"]), "photo_reference": row["photo_reference"]}
+                ({"participant_type": row["participant_type"], "participant_id": str(row["participant_id"]), "photo_reference": row["photo_reference"]}
+                 if "participant_type" in row else {"guest_id": str(row["guest_id"]), "photo_reference": row["photo_reference"]})
                 for row in rows
             ]
         except (pymysql.Error, FaceDatabaseError) as exc:
