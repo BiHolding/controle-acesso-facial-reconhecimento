@@ -85,6 +85,16 @@ reconhecer
 
 Ou `python -m reconhecimento.recognize`. Pressione `q` para encerrar.
 
+Para escolher facilmente a webcam e o monitor sem editar o `.env`:
+
+```powershell
+reconhecer --camera 1 --monitor 0
+```
+
+As opções curtas também são aceitas: `reconhecer -c 1 -m 0`. Os valores
+informados no comando têm prioridade sobre `CAMERA_INDEX` e `DISPLAY_INDEX` do
+`.env`. Execute `reconhecer --help` para consultar as opções disponíveis.
+
 ### Duas webcams e dois monitores no mesmo notebook
 
 Configure o pareamento no `.env`:

@@ -957,6 +957,7 @@ def run_display(
     repository=None,
     sync_thread=None,
     camera_index: int = 0,
+    display_index: int | None = None,
     access_direction: str = "ENTRY",
 ):
     """Executa o loop Qt com reconhecimento facial."""
@@ -968,7 +969,7 @@ def run_display(
     app = QApplication(sys.argv)
 
     screens = app.screens()
-    configured_display = os.getenv("DISPLAY_INDEX", "0")
+    configured_display = str(display_index) if display_index is not None else os.getenv("DISPLAY_INDEX", "0")
     display_index = _safe_display_index(configured_display, len(screens))
     try:
         parsed_display = int(configured_display)

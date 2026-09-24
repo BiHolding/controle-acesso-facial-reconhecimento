@@ -2,7 +2,12 @@ import os
 import unittest
 from unittest.mock import patch
 
-from reconhecimento.config import access_direction_from_env, camera_index_from_env
+from reconhecimento.config import (
+    access_direction_from_env,
+    camera_index_from_env,
+    device_indices_from_args,
+    display_index_from_env,
+)
 from reconhecimento.display import _first_name, _layout_metrics, _safe_display_index
 
 
@@ -24,6 +29,29 @@ class CameraIndexConfigurationTest(unittest.TestCase):
     def test_camera_index_rejects_negative_value(self) -> None:
         with self.assertRaisesRegex(ValueError, "Invalid CAMERA_INDEX: -1"):
             camera_index_from_env()
+
+    @patch.dict(os.environ, {"DISPLAY_INDEX": "2"}, clear=True)
+    def test_display_index_accepts_custom_value(self) -> None:
+        self.assertEqual(display_index_from_env(), 2)
+
+
+class CommandLineIndexConfigurationTest(unittest.TestCase):
+    @patch.dict(os.environ, {"CAMERA_INDEX": "0", "DISPLAY_INDEX": "0"}, clear=True)
+    def test_command_line_overrides_environment(self) -> None:
+        self.assertEqual(device_indices_from_args(["--camera", "2", "--monitor", "1"]), (2, 1))
+
+    @patch.dict(os.environ, {"CAMERA_INDEX": "3", "DISPLAY_INDEX": "2"}, clear=True)
+    def test_short_options_override_environment(self) -> None:
+        self.assertEqual(device_indices_from_args(["-c", "1", "-m", "0"]), (1, 0))
+
+    @patch.dict(os.environ, {"CAMERA_INDEX": "3", "DISPLAY_INDEX": "2"}, clear=True)
+    def test_environment_remains_the_default(self) -> None:
+        self.assertEqual(device_indices_from_args([]), (3, 2))
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_negative_command_line_index_is_rejected(self) -> None:
+        with self.assertRaises(SystemExit):
+            device_indices_from_args(["--camera", "-1"])
 
 
 class AccessDirectionConfigurationTest(unittest.TestCase):
