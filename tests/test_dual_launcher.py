@@ -16,11 +16,11 @@ class DualLauncherConfigurationTest(unittest.TestCase):
         first, second = station_configs_from_env()
 
         self.assertEqual(
-            (0, 0, "ENTRY"),
+            (0, 1, "ENTRY"),
             (first.camera_index, first.display_index, first.direction),
         )
         self.assertEqual(
-            (1, 1, "EXIT"),
+            (1, 2, "EXIT"),
             (second.camera_index, second.display_index, second.direction),
         )
         self.assertEqual("ENTRADA_PRINCIPAL", first.access_point)
@@ -31,7 +31,7 @@ class DualLauncherConfigurationTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "mesma webcam"):
             station_configs_from_env()
 
-    @patch.dict(os.environ, {"STATION_2_DISPLAY_INDEX": "0"}, clear=True)
+    @patch.dict(os.environ, {"STATION_2_DISPLAY_INDEX": "1"}, clear=True)
     def test_rejects_the_same_display_for_both_stations(self):
         with self.assertRaisesRegex(ValueError, "mesmo monitor"):
             station_configs_from_env()
@@ -72,10 +72,28 @@ class DualLauncherConfigurationTest(unittest.TestCase):
             StationConfig(2, 1, 1, 0, "EXIT", "VIP_EXIT_01"),
         )
 
-        with self.assertRaisesRegex(RuntimeError, "Apenas um monitor"):
+        with self.assertRaisesRegex(RuntimeError, "modo Estender"):
             validate_displays(stations, 1)
 
-    @patch.dict(os.environ, {"KEEP_ME": "yes"}, clear=True)
+    def test_requires_notebook_and_two_external_displays_for_operator_mode(self):
+        stations = (
+            StationConfig(1, 0, 1, 0, "ENTRY", "VIP_ENTRANCE_01"),
+            StationConfig(2, 1, 2, 0, "EXIT", "VIP_EXIT_01"),
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "tela do notebook"):
+            validate_displays(stations, 2, operator_display_index=0)
+
+    def test_rejects_operator_dashboard_on_a_station_display(self):
+        stations = (
+            StationConfig(1, 0, 1, 0, "ENTRY", "VIP_ENTRANCE_01"),
+            StationConfig(2, 1, 2, 0, "EXIT", "VIP_EXIT_01"),
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "telas diferentes"):
+            validate_displays(stations, 3, operator_display_index=1)
+
+    @patch.dict(os.environ, {"KEEP_ME": "yes", "OPERATOR_EVENT_PORT": "38000"}, clear=True)
     def test_builds_an_isolated_environment_for_each_station(self):
         environment = child_environment(
             StationConfig(2, 4, 3, 19, "EXIT", "VIP_EXIT_02")
@@ -87,6 +105,7 @@ class DualLauncherConfigurationTest(unittest.TestCase):
         self.assertEqual("2", environment["STATION_NUMBER"])
         self.assertEqual("EXIT", environment["ACCESS_DIRECTION"])
         self.assertEqual("VIP_EXIT_02", environment["ACCESS_POINT"])
+        self.assertEqual("38000", environment["OPERATOR_EVENT_PORT"])
         self.assertEqual("false", environment["FACE_ENROLLMENT_ENABLED"])
         self.assertEqual("yes", environment["KEEP_ME"])
 

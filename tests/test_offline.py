@@ -103,6 +103,45 @@ class HybridRecognitionServiceTest(unittest.TestCase):
             duplicate = store.record_offline("42", "ENTRADA_PRINCIPAL", "ENTRY")
             self.assertEqual("DUPLICATE_ENTRY", duplicate.reason)
 
+    def test_known_online_denial_uses_only_the_matching_local_name(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = OfflineAccessStore(Path(directory) / "state.sqlite3", 400)
+            index = InMemoryFaceIndex(0.6)
+            index.replace({"GUEST:42": unit_embedding()})
+            client = MagicMock()
+            client.recognize.return_value = RecognitionResult(
+                True, False, "DUPLICATE_ENTRY", guest_id="42",
+                participant_type="guest", participant_id="42", name=None,
+                similarity=1.0, direction="ENTRY",
+            )
+            service = HybridRecognitionService(
+                client, index, lambda: {"GUEST:42": "Convidado Reconhecido"}, store,
+                "ENTRY", "ENTRADA_PRINCIPAL",
+            )
+
+            result = service.recognize(unit_embedding())
+
+            self.assertFalse(result.allowed)
+            self.assertEqual("Convidado Reconhecido", result.name)
+
+    def test_online_denial_does_not_use_a_name_from_a_different_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = OfflineAccessStore(Path(directory) / "state.sqlite3", 400)
+            index = InMemoryFaceIndex(0.6)
+            index.replace({"GUEST:99": unit_embedding()})
+            client = MagicMock()
+            client.recognize.return_value = RecognitionResult(
+                True, False, "NOT_AUTHORIZED", guest_id="42",
+                participant_type="guest", participant_id="42", name=None,
+                similarity=1.0, direction="ENTRY",
+            )
+            service = HybridRecognitionService(
+                client, index, lambda: {"GUEST:99": "Outra Pessoa"}, store,
+                "ENTRY", "ENTRADA_PRINCIPAL",
+            )
+
+            self.assertIsNone(service.recognize(unit_embedding()).name)
+
     def test_pending_queue_keeps_later_decisions_offline_to_preserve_order(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             store = OfflineAccessStore(Path(directory) / "state.sqlite3", 400)

@@ -22,6 +22,7 @@ dependencies = [
 [project.scripts]
 reconhecer = "reconhecimento.recognize:main"
 reconhecer-duplo = "reconhecimento.dual_launcher:main"
+painel-operador = "reconhecimento.operator_dashboard:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

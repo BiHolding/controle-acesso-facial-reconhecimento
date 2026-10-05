@@ -10,7 +10,7 @@ import threading
 import time
 import uuid
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
@@ -266,9 +266,23 @@ class HybridRecognitionService:
         try:
             result = self.online_client.recognize(embedding)
             self.store.reconcile_online(result)
-            return result
+            return self._with_local_name(result, match)
         except ApiUnavailableError:
             return self._offline_result(match)
+
+    def _with_local_name(self, result: RecognitionResult, match) -> RecognitionResult:
+        """Completa o nome de uma negativa conhecida sem confiar em outro rosto."""
+        if not result.recognized or result.name or match is None or not result.participant_id:
+            return result
+        participant_type = (result.participant_type or "guest").upper()
+        expected_keys = {
+            str(result.participant_id),
+            f"{participant_type}:{result.participant_id}",
+        }
+        if match.guest_id not in expected_keys:
+            return result
+        local_name = (self.names().get(match.guest_id) or "").strip()
+        return replace(result, name=local_name) if local_name else result
 
     def _offline_result(self, match) -> RecognitionResult:
         if match is None:

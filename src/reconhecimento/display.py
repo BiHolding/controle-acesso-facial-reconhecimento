@@ -14,6 +14,7 @@ from dataclasses import dataclass
 
 import cv2
 import numpy as np
+from reconhecimento.operator_events import publish_operator_result
 from PyQt5.QtCore import (
     Qt,
     QTimer,
@@ -231,7 +232,7 @@ class RecognitionWorkerThread(QThread):
 
         self.result_ready.emit(DisplayResult(
             state=state,
-            name=result.name if result.allowed else None,
+            name=result.name if result.recognized else None,
             similarity=result.similarity,
             reason=result.reason,
             direction=result.direction,
@@ -827,6 +828,9 @@ class PortraitWindow(QMainWindow):
         """Recebe resultado do worker de reconhecimento."""
         state = result.state
         self._camera_widget.set_guide_state(state)
+
+        if state in {"authorized", "denied", "unknown", "error"}:
+            publish_operator_result(result, self._access_direction)
 
         if state == "authorized":
             self._current_state = "authorized"

@@ -11,6 +11,8 @@ import sys
 import time
 
 from dotenv import load_dotenv
+from reconhecimento.operator_dashboard import operator_display_index_from_env
+from reconhecimento.operator_events import event_port_from_env
 
 
 @dataclass(frozen=True)
@@ -56,7 +58,7 @@ def station_configs_from_env() -> tuple[StationConfig, StationConfig]:
         StationConfig(
             number=1,
             camera_index=_non_negative_int("STATION_1_CAMERA_INDEX", 0),
-            display_index=_non_negative_int("STATION_1_DISPLAY_INDEX", 0),
+            display_index=_non_negative_int("STATION_1_DISPLAY_INDEX", 1),
             device_id=_non_negative_int("STATION_1_DEVICE_ID", 0),
             direction=_direction("STATION_1_DIRECTION", "ENTRY"),
             access_point=_access_point("STATION_1_ACCESS_POINT", "ENTRADA_PRINCIPAL"),
@@ -64,7 +66,7 @@ def station_configs_from_env() -> tuple[StationConfig, StationConfig]:
         StationConfig(
             number=2,
             camera_index=_non_negative_int("STATION_2_CAMERA_INDEX", 1),
-            display_index=_non_negative_int("STATION_2_DISPLAY_INDEX", 1),
+            display_index=_non_negative_int("STATION_2_DISPLAY_INDEX", 2),
             device_id=_non_negative_int("STATION_2_DEVICE_ID", 0),
             direction=_direction("STATION_2_DIRECTION", "EXIT"),
             access_point=_access_point("STATION_2_ACCESS_POINT", "SAIDA_PRINCIPAL"),
@@ -89,17 +91,30 @@ def connected_display_count() -> int | None:
     return int(ctypes.windll.user32.GetSystemMetrics(80))  # SM_CMONITORS
 
 
-def validate_displays(stations: tuple[StationConfig, ...], display_count: int | None) -> None:
+def validate_displays(
+    stations: tuple[StationConfig, ...],
+    display_count: int | None,
+    operator_display_index: int | None = None,
+) -> None:
     if display_count is None:
         return
-    if display_count < 2:
+    required_count = 3 if operator_display_index is not None else 2
+    if display_count < required_count:
         raise RuntimeError(
-            "[DUAL] Apenas um monitor foi detectado. Conecte e habilite o segundo monitor no Windows."
+            "[DUAL] A operação exige a tela do notebook e dois monitores externos "
+            "habilitados no modo Estender do Windows."
         )
+    configured_displays = [station.display_index for station in stations]
+    if operator_display_index is not None:
+        configured_displays.append(operator_display_index)
+        if len(configured_displays) != len(set(configured_displays)):
+            raise RuntimeError(
+                "[DUAL] O painel do notebook, a entrada e a saída devem usar telas diferentes."
+            )
     unavailable = [
-        station.display_index
-        for station in stations
-        if station.display_index >= display_count
+        display_index
+        for display_index in configured_displays
+        if display_index >= display_count
     ]
     if unavailable:
         raise RuntimeError(
@@ -108,7 +123,7 @@ def validate_displays(stations: tuple[StationConfig, ...], display_count: int | 
         )
 
 
-def child_environment(station: StationConfig) -> dict[str, str]:
+def child_environment(station: StationConfig, event_port: int | None = None) -> dict[str, str]:
     environment = os.environ.copy()
     environment["CAMERA_INDEX"] = str(station.camera_index)
     environment["DISPLAY_INDEX"] = str(station.display_index)
@@ -116,6 +131,7 @@ def child_environment(station: StationConfig) -> dict[str, str]:
     environment["STATION_NUMBER"] = str(station.number)
     environment["ACCESS_DIRECTION"] = station.direction
     environment["ACCESS_POINT"] = station.access_point
+    environment["OPERATOR_EVENT_PORT"] = str(event_port or event_port_from_env())
     station_key = os.getenv(f"STATION_{station.number}_DEVICE_KEY", "").strip()
     if station_key:
         environment["DEVICE_KEY"] = station_key
@@ -129,13 +145,26 @@ def main() -> None:
     load_dotenv()
     try:
         stations = station_configs_from_env()
-        validate_displays(stations, connected_display_count())
+        operator_display_index = operator_display_index_from_env()
+        event_port = event_port_from_env()
+        validate_displays(stations, connected_display_count(), operator_display_index)
     except (ValueError, RuntimeError) as exc:
         print(exc)
         raise SystemExit(2) from None
 
     processes: list[tuple[StationConfig, subprocess.Popen]] = []
+    dashboard_process: subprocess.Popen | None = None
     try:
+        dashboard_environment = os.environ.copy()
+        dashboard_environment["OPERATOR_DISPLAY_INDEX"] = str(operator_display_index)
+        dashboard_environment["OPERATOR_EVENT_PORT"] = str(event_port)
+        print(
+            f"[DUAL] Iniciando painel operacional no monitor {operator_display_index}."
+        )
+        dashboard_process = subprocess.Popen(
+            [sys.executable, "-m", "reconhecimento.operator_dashboard"],
+            env=dashboard_environment,
+        )
         for station in stations:
             print(
                 f"[DUAL] Iniciando estação {station.number}: "
@@ -145,11 +174,18 @@ def main() -> None:
             )
             process = subprocess.Popen(
                 [sys.executable, "-m", "reconhecimento.recognize"],
-                env=child_environment(station),
+                env=child_environment(station, event_port),
             )
             processes.append((station, process))
 
         while processes:
+            if dashboard_process is not None:
+                dashboard_exit_code = dashboard_process.poll()
+                if dashboard_exit_code is not None:
+                    print(
+                        f"[DUAL] Painel operacional encerrado (código {dashboard_exit_code})."
+                    )
+                    dashboard_process = None
             for station, process in tuple(processes):
                 exit_code = process.poll()
                 if exit_code is not None:
@@ -163,6 +199,8 @@ def main() -> None:
         print(f"[DUAL] Não foi possível iniciar uma das estações: {exc}")
         raise SystemExit(3) from None
     finally:
+        if dashboard_process is not None and dashboard_process.poll() is None:
+            dashboard_process.terminate()
         for _, process in processes:
             if process.poll() is None:
                 process.terminate()
@@ -171,6 +209,11 @@ def main() -> None:
                 process.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 process.kill()
+        if dashboard_process is not None:
+            try:
+                dashboard_process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                dashboard_process.kill()
 
 
 if __name__ == "__main__":

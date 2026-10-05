@@ -68,6 +68,37 @@ class RecognitionWorkerThreadTest(unittest.TestCase):
         worker._process(frame)
         self.assertEqual(0, len(worker._embedding_samples))
 
+    def test_keeps_the_identified_name_for_the_operator_when_access_is_denied(self) -> None:
+        detector = MagicMock()
+        detector.detect.return_value = [MagicMock()]
+        embedder = MagicMock()
+        embedding = np.zeros(512, dtype=np.float32)
+        embedding[0] = 1.0
+        embedder.generate.return_value = embedding
+        recognize_fn = MagicMock(return_value=RecognitionResult(
+            recognized=True,
+            allowed=False,
+            reason="DUPLICATE_ENTRY",
+            guest_id="2",
+            participant_type="guest",
+            participant_id="2",
+            name="Convidada Identificada",
+            similarity=0.91,
+            direction="ENTRY",
+        ))
+        worker = RecognitionWorkerThread(detector, embedder, MagicMock(), recognize_fn)
+        worker._quality = MagicMock()
+        worker._quality.assess.return_value = MagicMock(acceptable=True)
+        emitted = []
+        worker.result_ready.connect(emitted.append)
+        frame = np.zeros((480, 640, 3), dtype=np.uint8)
+
+        for _ in range(3):
+            worker._process(frame)
+
+        self.assertEqual("denied", emitted[-1].state)
+        self.assertEqual("Convidada Identificada", emitted[-1].name)
+
 
 if __name__ == "__main__":
     unittest.main()

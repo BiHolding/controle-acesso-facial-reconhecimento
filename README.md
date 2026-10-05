@@ -95,19 +95,21 @@ As opções curtas também são aceitas: `reconhecer -c 1 -m 0`. Os valores
 informados no comando têm prioridade sobre `CAMERA_INDEX` e `DISPLAY_INDEX` do
 `.env`. Execute `reconhecer --help` para consultar as opções disponíveis.
 
-### Duas webcams e dois monitores no mesmo notebook
+### Duas webcams, dois monitores externos e painel no notebook
 
 Configure o pareamento no `.env`:
 
 ```env
+OPERATOR_DISPLAY_INDEX=0
+OPERATOR_EVENT_PORT=37651
 STATION_1_CAMERA_INDEX=0
-STATION_1_DISPLAY_INDEX=0
+STATION_1_DISPLAY_INDEX=1
 STATION_1_DEVICE_ID=0
 STATION_1_DIRECTION=ENTRY
 STATION_1_ACCESS_POINT=ENTRADA_PRINCIPAL
 STATION_1_DEVICE_KEY=replace-with-entry-device-key
 STATION_2_CAMERA_INDEX=1
-STATION_2_DISPLAY_INDEX=1
+STATION_2_DISPLAY_INDEX=2
 STATION_2_DEVICE_ID=0
 STATION_2_DIRECTION=EXIT
 STATION_2_ACCESS_POINT=SAIDA_PRINCIPAL
@@ -120,9 +122,15 @@ Depois inicie as duas estações com:
 reconhecer-duplo
 ```
 
+O Windows deve estar no modo **Estender** e detectar três telas: índice 0 para o
+painel operacional do notebook, índice 1 para a entrada e índice 2 para a saída.
+O painel mostra, em tempo real, o nome identificado, o sentido e se o acesso foi
+autorizado, negado, não identificado ou não pôde ser validado, além do histórico
+recente. A comunicação acontece somente no próprio notebook.
+
 Cada estação roda em um processo isolado. Se uma câmera apresentar falha, a
 outra permanece disponível. O inicializador bloqueia câmera ou monitor duplicado
-e avisa quando o segundo monitor não está habilitado no Windows. Para registrar
+e avisa quando as três telas não estão habilitadas no Windows. Para registrar
 as decisões na API, configure uma chave técnica diferente para cada estação.
 O enrollment automático roda somente na estação
 1, evitando que as duas instâncias processem a mesma fotografia simultaneamente.
