@@ -132,6 +132,7 @@ def child_environment(station: StationConfig, event_port: int | None = None) -> 
     environment["ACCESS_DIRECTION"] = station.direction
     environment["ACCESS_POINT"] = station.access_point
     environment["OPERATOR_EVENT_PORT"] = str(event_port or event_port_from_env())
+    environment["OPERATOR_DASHBOARD_ENABLED"] = "false"
     station_key = os.getenv(f"STATION_{station.number}_DEVICE_KEY", "").strip()
     if station_key:
         environment["DEVICE_KEY"] = station_key

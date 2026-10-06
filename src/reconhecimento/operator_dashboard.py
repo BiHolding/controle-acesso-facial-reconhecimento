@@ -127,7 +127,7 @@ class OperatorDashboard(QMainWindow):
         eyebrow.setObjectName("eyebrow")
         title = QLabel("Controle de acesso em tempo real")
         title.setObjectName("pageTitle")
-        subtitle = QLabel("Acompanhe as autorizações e negativas das duas estações.")
+        subtitle = QLabel("Acompanhe em tempo real quem está entrando e saindo.")
         subtitle.setObjectName("subtitle")
         titles.addWidget(eyebrow)
         titles.addWidget(title)

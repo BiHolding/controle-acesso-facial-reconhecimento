@@ -7,8 +7,15 @@ from reconhecimento.config import (
     camera_index_from_env,
     device_indices_from_args,
     display_index_from_env,
+    event_cooldowns_from_env,
+    result_timeout_seconds_from_env,
 )
-from reconhecimento.display import _first_name, _layout_metrics, _safe_display_index
+from reconhecimento.display import (
+    _first_name,
+    _layout_metrics,
+    _safe_display_index,
+    _validated_display_index,
+)
 
 
 class CameraIndexConfigurationTest(unittest.TestCase):
@@ -68,6 +75,31 @@ class AccessDirectionConfigurationTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Invalid ACCESS_DIRECTION"):
             access_direction_from_env()
 
+
+class AccessTimeoutConfigurationTest(unittest.TestCase):
+    @patch.dict(os.environ, {}, clear=True)
+    def test_timeouts_default_to_one_second(self):
+        self.assertEqual(1.0, result_timeout_seconds_from_env())
+        self.assertEqual((1.0, 1.0), event_cooldowns_from_env())
+
+    @patch.dict(
+        os.environ,
+        {
+            "ACCESS_RESULT_TIMEOUT_SECONDS": "1.5",
+            "ACCESS_EVENT_COOLDOWN_SECONDS": "2",
+            "UNKNOWN_EVENT_COOLDOWN_SECONDS": "3",
+        },
+        clear=True,
+    )
+    def test_timeouts_accept_configured_values(self):
+        self.assertEqual(1.5, result_timeout_seconds_from_env())
+        self.assertEqual((2.0, 3.0), event_cooldowns_from_env())
+
+    @patch.dict(os.environ, {"ACCESS_RESULT_TIMEOUT_SECONDS": "invalid"}, clear=True)
+    def test_invalid_timeout_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, "Invalid ACCESS_RESULT_TIMEOUT_SECONDS"):
+            result_timeout_seconds_from_env()
+
 class DisplayHelpersTest(unittest.TestCase):
     def test_first_name_is_safe(self) -> None:
         self.assertEqual(_first_name("  Alexandre Santana "), "Alexandre")
@@ -81,6 +113,13 @@ class DisplayHelpersTest(unittest.TestCase):
 
     def test_display_index_accepts_existing_screen(self) -> None:
         self.assertEqual(_safe_display_index("1", 2), 1)
+
+    def test_runtime_display_index_rejects_missing_monitor(self) -> None:
+        with self.assertRaisesRegex(ValueError, "Monitor 2 não está disponível"):
+            _validated_display_index("2", 2)
+
+    def test_runtime_display_index_accepts_external_monitor(self) -> None:
+        self.assertEqual(_validated_display_index("1", 2), 1)
 
     def test_portrait_layout_uses_screen_proportions(self) -> None:
         margin, preview_width, preview_height = _layout_metrics(768, 1366)

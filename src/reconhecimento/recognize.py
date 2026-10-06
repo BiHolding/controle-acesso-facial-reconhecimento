@@ -6,7 +6,7 @@ Fluxo:
   3. Worker detecta faces, gera embeddings
   4. Confirma estabilidade em cinco amostras e calcula um embedding médio
   5. A API VIP identifica e registra entrada/saída atomicamente
-  6. Badge verde/vermelho é exibido na janela por 3 segundos
+  6. Badge verde/vermelho é exibido pelo intervalo configurado (1 segundo por padrão)
 """
 import os
 import sys
@@ -21,13 +21,19 @@ ensure_onnxruntime_loaded()
 import cv2
 from dotenv import load_dotenv
 
-from reconhecimento.config import access_direction_from_env, device_indices_from_args
+from reconhecimento.config import (
+    access_direction_from_env,
+    device_indices_from_args,
+    event_cooldowns_from_env,
+    result_timeout_seconds_from_env,
+)
 from reconhecimento.recognition.confirmation import RecognitionConfirmation
 from reconhecimento.recognition.detector import FaceDetector
 from reconhecimento.recognition.embedder import FaceEmbedder
 from reconhecimento.recognition.guard import AccessEventGuard
 from reconhecimento.recognition.matcher import FaceMatch, InMemoryFaceIndex
 from reconhecimento.database.repository import FaceDatabaseError, FaceRepository
+from reconhecimento.operator_launcher import start_operator_dashboard, stop_operator_dashboard
 
 # ── Constantes visuais ────────────────────────────────────────────────────────
 GREEN = (50, 205, 50)
@@ -36,7 +42,7 @@ AMBER = (0, 180, 230)
 FONT  = cv2.FONT_HERSHEY_SIMPLEX
 
 # ── Constantes de comportamento ───────────────────────────────────────────────
-SHOW_SECS        = 3.0   # segundos que o badge fica visível
+SHOW_SECS        = 1.0   # atualizado no main a partir do .env
 PROCESS_EVERY_N  = 3     # analisa 1 a cada N frames (alivia CPU)
 UNKNOWN_REQUIRED = 10    # frames sem reconhecimento para mostrar "Desconhecido"
 DEBUG = os.getenv("FACE_DEBUG", "").lower() in {"1", "true", "yes"}
@@ -357,6 +363,7 @@ class RecognitionWorker(threading.Thread):
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main() -> None:
+    global SHOW_SECS
     from reconhecimento.api.client import AccessControlClient, EnrollmentClient, RecognitionApiError
     from reconhecimento.display import run_display
     from reconhecimento.enrollment.pipeline import EnrollmentPipeline
@@ -373,6 +380,8 @@ def main() -> None:
     try:
         camera_index, display_index = device_indices_from_args()
         access_direction = access_direction_from_env()
+        SHOW_SECS = result_timeout_seconds_from_env()
+        event_cooldown, unknown_cooldown = event_cooldowns_from_env()
     except ValueError as exc:
         print(exc)
         raise SystemExit(2) from None
@@ -384,7 +393,10 @@ def main() -> None:
 
     detector = FaceDetector()
     embedder = FaceEmbedder()
-    guard    = AccessEventGuard(cooldown_seconds=10.0, unknown_cooldown_seconds=10.0)
+    guard = AccessEventGuard(
+        cooldown_seconds=event_cooldown,
+        unknown_cooldown_seconds=unknown_cooldown,
+    )
 
     try:
         api_client = AccessControlClient(
@@ -463,17 +475,21 @@ def main() -> None:
             replay_thread.start()
             print(f"[OFFLINE] Fila pendente: {offline_store.pending_count()}")
 
-    # Interface Qt portrait
-    exit_code = run_display(
-        detector=detector,
-        embedder=embedder,
-        guard=guard,
-        recognize_fn=hybrid.recognize,
-        sync_thread=sync,
-        camera_index=camera_index,
-        display_index=display_index,
-        access_direction=access_direction,
-    )
+    # Interface Qt portrait + painel observacional na tela do notebook.
+    operator_dashboard = start_operator_dashboard()
+    try:
+        exit_code = run_display(
+            detector=detector,
+            embedder=embedder,
+            guard=guard,
+            recognize_fn=hybrid.recognize,
+            sync_thread=sync,
+            camera_index=camera_index,
+            display_index=display_index,
+            access_direction=access_direction,
+        )
+    finally:
+        stop_operator_dashboard(operator_dashboard)
 
     if replay_thread is not None:
         replay_thread.stop()

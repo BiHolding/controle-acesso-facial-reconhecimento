@@ -14,6 +14,7 @@ from dataclasses import dataclass
 
 import cv2
 import numpy as np
+from reconhecimento.config import result_timeout_seconds_from_env
 from reconhecimento.operator_events import publish_operator_result
 from PyQt5.QtCore import (
     Qt,
@@ -59,11 +60,6 @@ CAMERA_HEIGHT = 480
 CAMERA_FPS = 30
 CAMERA_POLL_MS = 33  # ~30fps
 
-AUTHORIZED_SHOW_MS = 2000
-DEFAULT_RESULT_SHOW_MS = 3000
-UNKNOWN_SHOW_MS = 2000
-
-
 def _first_name(name: object | None) -> str:
     parts = str(name).strip().split() if name is not None else []
     return parts[0] if parts else ""
@@ -76,6 +72,19 @@ def _safe_display_index(raw_value: str, screen_count: int) -> int:
         return 0
     if configured_index < 0 or configured_index >= screen_count:
         return 0
+    return configured_index
+
+
+def _validated_display_index(raw_value: str, screen_count: int) -> int:
+    try:
+        configured_index = int(raw_value)
+    except ValueError as exc:
+        raise ValueError(f"[DISPLAY] DISPLAY_INDEX inválido: {raw_value}") from exc
+    if configured_index < 0 or configured_index >= screen_count:
+        raise ValueError(
+            f"[DISPLAY] Monitor {configured_index} não está disponível; "
+            f"o Windows detectou {screen_count} monitor(es)."
+        )
     return configured_index
 
 
@@ -131,7 +140,7 @@ class RecognitionWorkerThread(QThread):
             confirmation_samples = 3
         self._embedding_samples: deque[np.ndarray] = deque(maxlen=confirmation_samples)
         self._blocked_until = 0.0
-        self._show_secs = 3.0
+        self._show_secs = result_timeout_seconds_from_env()
         self._unknown_required = 10
         self._guidance_reason: str | None = None
         self._guidance_frames = 0
@@ -576,6 +585,8 @@ class PortraitWindow(QMainWindow):
         self._is_portrait = screen_geometry.height() > screen_geometry.width()
         self._screen_size = screen_geometry.size()
         self._access_direction = access_direction
+        self._result_show_secs = result_timeout_seconds_from_env()
+        self._result_show_ms = round(self._result_show_secs * 1000)
 
         # Centralizar e configurar
         self._setup_geometry(screen_geometry)
@@ -834,7 +845,7 @@ class PortraitWindow(QMainWindow):
 
         if state == "authorized":
             self._current_state = "authorized"
-            self._success_until = time.monotonic() + 2.0
+            self._success_until = time.monotonic() + self._result_show_secs
             self._success_overlay.show_success(result.name or "", result.direction or self._access_direction)
             success_message = (
                 "Saída confirmada. Até breve."
@@ -844,11 +855,11 @@ class PortraitWindow(QMainWindow):
             self._status.set_status("authorized", result.name, success_message)
             success_text = "SAÍDA REGISTRADA" if result.direction == "EXIT" else "ENTRADA REGISTRADA"
             self._set_instruction(success_text, ACCENT_GREEN, 22, 700)
-            show_ms = AUTHORIZED_SHOW_MS
+            show_ms = self._result_show_ms
 
         elif state == "denied":
             self._current_state = "denied"
-            self._success_until = time.monotonic() + 3.0
+            self._success_until = time.monotonic() + self._result_show_secs
             self._success_overlay.hide_success()
             denied_messages = {
                 "DUPLICATE_ENTRY": "Sua entrada já está registrada",
@@ -861,31 +872,31 @@ class PortraitWindow(QMainWindow):
             message = denied_messages.get(result.reason or "", "Acesso não disponível")
             self._status.set_status("denied", message=message)
             self._set_instruction(message, ACCENT_RED)
-            show_ms = DEFAULT_RESULT_SHOW_MS
+            show_ms = self._result_show_ms
 
         elif state == "unknown":
             self._current_state = "unknown"
-            self._success_until = time.monotonic() + 2.0
+            self._success_until = time.monotonic() + self._result_show_secs
             self._success_overlay.hide_success()
             self._status.set_status("unknown")
             self._set_instruction("Não conseguimos identificar você", ACCENT_RED)
-            show_ms = UNKNOWN_SHOW_MS
+            show_ms = self._result_show_ms
 
         elif state == "error":
             self._current_state = "error"
-            self._success_until = time.monotonic() + 3.0
+            self._success_until = time.monotonic() + self._result_show_secs
             self._success_overlay.hide_success()
             self._status.set_status("error")
             self._set_instruction("Não foi possível validar seu acesso", ACCENT_AMBER)
-            show_ms = DEFAULT_RESULT_SHOW_MS
+            show_ms = self._result_show_ms
 
         elif state == "validating":
             self._current_state = "validating"
-            self._success_until = time.monotonic() + (DEFAULT_RESULT_SHOW_MS / 1000)
+            self._success_until = time.monotonic() + self._result_show_secs
             self._success_overlay.hide_success()
             self._status.set_status("validating", message=result.message)
             self._set_instruction("Validando seu acesso...", FG_SECONDARY)
-            show_ms = DEFAULT_RESULT_SHOW_MS
+            show_ms = self._result_show_ms
 
         elif state == "guidance":
             self._current_state = "guidance"
@@ -974,16 +985,7 @@ def run_display(
 
     screens = app.screens()
     configured_display = str(display_index) if display_index is not None else os.getenv("DISPLAY_INDEX", "0")
-    display_index = _safe_display_index(configured_display, len(screens))
-    try:
-        parsed_display = int(configured_display)
-    except ValueError:
-        parsed_display = -1
-    if parsed_display != display_index:
-        print(
-            f"[DISPLAY] Invalid DISPLAY_INDEX: {configured_display}; "
-            f"using {display_index}"
-        )
+    display_index = _validated_display_index(configured_display, len(screens))
     selected_screen = screens[display_index]
     geometry = selected_screen.geometry()
     available = selected_screen.availableGeometry()

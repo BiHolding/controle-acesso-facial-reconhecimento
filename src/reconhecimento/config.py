@@ -35,6 +35,28 @@ def display_index_from_env() -> int:
     return display_index
 
 
+def _seconds_from_env(name: str, default: float) -> float:
+    raw_value = os.getenv(name, str(default))
+    try:
+        seconds = float(raw_value)
+    except ValueError as exc:
+        raise ValueError(f"[CONFIG] Invalid {name}: {raw_value}") from exc
+    if seconds < 0:
+        raise ValueError(f"[CONFIG] Invalid {name}: {raw_value}")
+    return seconds
+
+
+def result_timeout_seconds_from_env() -> float:
+    return _seconds_from_env("ACCESS_RESULT_TIMEOUT_SECONDS", 1.0)
+
+
+def event_cooldowns_from_env() -> tuple[float, float]:
+    return (
+        _seconds_from_env("ACCESS_EVENT_COOLDOWN_SECONDS", 1.0),
+        _seconds_from_env("UNKNOWN_EVENT_COOLDOWN_SECONDS", 1.0),
+    )
+
+
 def device_indices_from_args(argv: Sequence[str] | None = None) -> tuple[int, int]:
     parser = argparse.ArgumentParser(
         prog="reconhecer",
