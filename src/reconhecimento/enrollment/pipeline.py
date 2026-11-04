@@ -30,6 +30,7 @@ from reconhecimento.enrollment.image_validator import (
 )
 from reconhecimento.recognition.detector import FaceDetector
 from reconhecimento.recognition.embedder import FaceEmbedder
+from reconhecimento.recognition.quality import FaceQualityAssessor
 
 load_dotenv()
 
@@ -57,12 +58,17 @@ class EnrollmentPipeline:
         embedder: FaceEmbedder | None,
         ftp_config: FtpConfig | None = None,
         enrollment_client: EnrollmentClient | None = None,
+        quality_assessor: FaceQualityAssessor | None = None,
     ) -> None:
         self.repository = repository
         self.detector = detector
         self.embedder = embedder
         self.ftp_config = ftp_config or FtpConfig.from_env()
         self.enrollment_client = enrollment_client
+        self.quality_assessor = quality_assessor or FaceQualityAssessor(
+            minimum_face_width_ratio=0.24,
+            minimum_sharpness=55.0,
+        )
 
     def enroll_pending_guests(self) -> list[EnrollmentResult]:
         """Enrolla todos os Guests pendentes de enrollment.
@@ -96,12 +102,18 @@ class EnrollmentPipeline:
             try:
                 result = self._enroll_single_guest(guest_id, photo_reference, participant_type)
                 results.append(result)
+                if not result.success:
+                    print(
+                        f"[ENROLL] {participant_type} {guest_id}: "
+                        f"falha — {result.reason}"
+                    )
             except Exception as exc:
                 print(f"[ENROLL] Erro inesperado no guest {guest_id}: {exc}")
                 results.append(EnrollmentResult(
                     guest_id=guest_id,
                     success=False,
                     reason=f"Erro inesperado: {exc}",
+                    participant_type=participant_type,
                 ))
 
         # Resumo
@@ -222,8 +234,18 @@ class EnrollmentPipeline:
                 print(f"[ENROLL] Esperado 1 face, encontrado {len(faces)}")
                 return None
 
+            face = faces[0]
+            det_score = float(getattr(face, "det_score", 1.0))
+            if det_score < 0.70:
+                print(f"[ENROLL] Confiança de detecção insuficiente: {det_score:.3f}")
+                return None
+            quality = self.quality_assessor.assess(image, face)
+            if not quality.acceptable:
+                print(f"[ENROLL] Foto de referência recusada: {quality.reason}")
+                return None
+
             # Gera embedding
-            embedding = self.embedder.generate(faces[0], image)
+            embedding = self.embedder.generate(face, image)
 
             # Valida embedding
             if embedding.shape != (512,):

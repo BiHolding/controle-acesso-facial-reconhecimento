@@ -1,6 +1,10 @@
 import numpy as np
 import cv2
 from pathlib import Path
+from reconhecimento.bootstrap import ensure_insightface_runtime
+
+ensure_insightface_runtime()
+
 from insightface.model_zoo.arcface_onnx import ArcFaceONNX
 
 

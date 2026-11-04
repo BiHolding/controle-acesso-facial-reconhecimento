@@ -29,10 +29,13 @@ class FaceMatch:
 class InMemoryFaceIndex:
     """Busca cosseno exata adequada a um conjunto pequeno/médio de Guests."""
 
-    def __init__(self, threshold: float) -> None:
+    def __init__(self, threshold: float, minimum_margin: float = 0.03) -> None:
         if not -1.0 <= threshold <= 1.0:
             raise ValueError("Threshold deve estar entre -1 e 1")
         self.threshold = threshold
+        if not 0.0 <= minimum_margin <= 1.0:
+            raise ValueError("Margem mínima deve estar entre 0 e 1")
+        self.minimum_margin = minimum_margin
         self._snapshot: tuple[tuple[str, ...], np.ndarray] = (
             (),
             np.empty((0, EMBEDDING_DIMENSION), dtype=np.float32),
@@ -60,4 +63,8 @@ class InMemoryFaceIndex:
         similarity = float(similarities[best_index])
         if similarity < self.threshold:
             return None
+        if len(similarities) > 1:
+            second_best = float(np.partition(similarities, -2)[-2])
+            if similarity - second_best < self.minimum_margin:
+                return None
         return FaceMatch(guest_ids[best_index], similarity)

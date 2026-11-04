@@ -50,6 +50,31 @@ class InMemoryFaceIndexTest(unittest.TestCase):
 
         self.assertIsNone(index.match(axis(0)))
 
+    def test_ambiguous_top_two_candidates_are_rejected(self) -> None:
+        first = axis(0)
+        second = axis(0)
+        second[1] = 0.01
+        index = InMemoryFaceIndex(threshold=0.8, minimum_margin=0.03)
+        index.replace({"guest-1": first, "guest-2": second})
+
+        self.assertIsNone(index.match(axis(0)))
+
+    def test_winner_with_safe_margin_is_accepted(self) -> None:
+        query = axis(0)
+        runner_up = axis(0, 0.85)
+        runner_up[1] = math.sqrt(1.0 - 0.85**2)
+        index = InMemoryFaceIndex(threshold=0.8, minimum_margin=0.03)
+        index.replace({"winner": axis(0), "runner-up": runner_up})
+
+        match = index.match(query)
+
+        self.assertIsNotNone(match)
+        self.assertEqual("winner", match.guest_id)
+
+    def test_invalid_margin_is_rejected(self) -> None:
+        with self.assertRaises(ValueError):
+            InMemoryFaceIndex(threshold=0.8, minimum_margin=-0.01)
+
 
 if __name__ == "__main__":
     unittest.main()

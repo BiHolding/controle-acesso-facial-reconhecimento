@@ -139,6 +139,7 @@ class RecognitionWorkerThread(QThread):
         if confirmation_samples < 3 or confirmation_samples > 7:
             confirmation_samples = 3
         self._embedding_samples: deque[np.ndarray] = deque(maxlen=confirmation_samples)
+        self._fast_pair_similarity = float(os.getenv("FACE_FAST_PAIR_SIMILARITY", "0.94"))
         self._blocked_until = 0.0
         self._show_secs = result_timeout_seconds_from_env()
         self._unknown_required = 10
@@ -207,10 +208,20 @@ class RecognitionWorkerThread(QThread):
                 state="validating",
                 message="Identidade em validação. Mantenha o olhar por um instante.",
             ))
-        if len(self._embedding_samples) < self._embedding_samples.maxlen:
+        samples = tuple(self._embedding_samples)
+        if len(samples) == 2:
+            first, second = (_normalized_embedding(item) for item in samples)
+            if float(first @ second) < self._fast_pair_similarity:
+                return
+            probe = first + second
+        elif len(samples) >= self._embedding_samples.maxlen:
+            probe = _robust_embedding_fusion(samples)
+            if probe is None:
+                self._embedding_samples.clear()
+                self._guide("UNSTABLE_FACE", "Fique imóvel por um instante e olhe para a câmera.")
+                return
+        else:
             return
-
-        probe = np.mean(np.stack(tuple(self._embedding_samples)), axis=0)
         self._embedding_samples.clear()
         norm = float(np.linalg.norm(probe))
         if not np.isfinite(norm) or norm <= np.finfo(np.float32).eps:
@@ -275,6 +286,26 @@ class RecognitionWorkerThread(QThread):
                 state="validating",
                 message="Perfeito. Mantenha-se assim por um instante.",
             ))
+
+
+def _normalized_embedding(value: np.ndarray) -> np.ndarray:
+    vector = np.asarray(value, dtype=np.float32)
+    norm = float(np.linalg.norm(vector))
+    if vector.shape != (512,) or not np.all(np.isfinite(vector)) or norm <= np.finfo(np.float32).eps:
+        raise ValueError("Embedding inválido")
+    return vector / norm
+
+
+def _robust_embedding_fusion(samples: tuple[np.ndarray, ...], minimum_similarity: float = 0.72) -> np.ndarray | None:
+    """Descarta uma amostra facial divergente antes de formar a sonda."""
+    vectors = np.stack([_normalized_embedding(item) for item in samples])
+    similarities = vectors @ vectors.T
+    support = (similarities >= minimum_similarity).sum(axis=1)
+    medoid = int(np.argmax(support))
+    inliers = vectors[similarities[medoid] >= minimum_similarity]
+    if len(inliers) < 2:
+        return None
+    return np.mean(inliers, axis=0)
 
 
 # ── DisplayState helper ────────────────────────────────────────────────────────

@@ -33,6 +33,8 @@ class EnrollmentPipelineTest(unittest.TestCase):
         self.ftp_config.user = "user"
         self.ftp_config.password = "pass"
         self.ftp_config.base_path = "test/path"
+        self.quality_assessor = MagicMock()
+        self.quality_assessor.assess.return_value = MagicMock(acceptable=True)
 
         self.pipeline = EnrollmentPipeline(
             repository=self.repository,
@@ -40,6 +42,7 @@ class EnrollmentPipelineTest(unittest.TestCase):
             embedder=self.embedder,
             ftp_config=self.ftp_config,
             enrollment_client=self.enrollment_client,
+            quality_assessor=self.quality_assessor,
         )
 
     def test_no_pending_guests(self) -> None:
@@ -264,6 +267,45 @@ class EnrollmentPipelineTest(unittest.TestCase):
 
                 # Verifica que o arquivo temporário foi removido
                 self.assertFalse(os.path.exists(tmp_path))
+
+    def test_reference_with_low_detection_confidence_is_rejected(self) -> None:
+        import cv2
+
+        image = np.full((240, 240, 3), 128, dtype=np.uint8)
+        with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as file:
+            path = file.name
+        cv2.imwrite(path, image)
+        face = MagicMock()
+        face.det_score = 0.69
+        self.detector.detect.return_value = [face]
+        try:
+            result = self.pipeline._generate_embedding(path)
+        finally:
+            os.unlink(path)
+
+        self.assertIsNone(result)
+        self.quality_assessor.assess.assert_not_called()
+        self.embedder.generate.assert_not_called()
+
+    def test_reference_rejected_by_quality_is_not_embedded(self) -> None:
+        import cv2
+
+        image = np.full((240, 240, 3), 128, dtype=np.uint8)
+        with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as file:
+            path = file.name
+        cv2.imwrite(path, image)
+        face = MagicMock()
+        face.det_score = 0.99
+        self.detector.detect.return_value = [face]
+        self.quality_assessor.assess.return_value = MagicMock(acceptable=False, reason="BLURRY")
+        try:
+            result = self.pipeline._generate_embedding(path)
+        finally:
+            os.unlink(path)
+
+        self.assertIsNone(result)
+        self.quality_assessor.assess.assert_called_once()
+        self.embedder.generate.assert_not_called()
 
 
 class EnrollmentResultTest(unittest.TestCase):

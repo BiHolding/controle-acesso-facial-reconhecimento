@@ -14,9 +14,9 @@ import threading
 import time
 from collections.abc import Callable
 
-from reconhecimento.bootstrap import ensure_onnxruntime_loaded
+from reconhecimento.bootstrap import ensure_insightface_runtime
 
-ensure_onnxruntime_loaded()
+ensure_insightface_runtime()
 
 import cv2
 from dotenv import load_dotenv

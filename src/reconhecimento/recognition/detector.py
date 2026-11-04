@@ -1,3 +1,7 @@
+from reconhecimento.bootstrap import ensure_insightface_runtime
+
+ensure_insightface_runtime()
+
 from insightface.app import FaceAnalysis
 
 
