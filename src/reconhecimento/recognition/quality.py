@@ -48,11 +48,11 @@ class FaceQualityAssessor:
     def __init__(
         self,
         *,
-        minimum_brightness: float = 55.0,
-        maximum_brightness: float = 215.0,
-        minimum_contrast: float = 18.0,
-        minimum_sharpness: float = 45.0,
-        minimum_face_width_ratio: float = 0.20,
+        minimum_brightness: float = 50.0,
+        maximum_brightness: float = 220.0,
+        minimum_contrast: float = 15.0,
+        minimum_sharpness: float = 35.0,
+        minimum_face_width_ratio: float = 0.16,
         center_tolerance_x: float = 0.24,
         center_tolerance_y: float = 0.25,
     ) -> None:

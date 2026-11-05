@@ -45,6 +45,26 @@ class RecognitionWorkerThreadTest(unittest.TestCase):
         recognize_fn.assert_called_once()
         self.assertAlmostEqual(float(np.linalg.norm(recognize_fn.call_args.args[0])), 1.0, places=6)
 
+    def test_two_realistically_consistent_samples_use_fast_path(self) -> None:
+        detector = MagicMock()
+        detector.detect.return_value = [MagicMock()]
+        first = unit_embedding(0)
+        second = unit_embedding(0) * 0.92
+        second[1] = np.sqrt(1.0 - 0.92**2)
+        embedder = MagicMock()
+        embedder.generate.side_effect = [first, second]
+        recognize_fn = MagicMock(return_value=self._authorized_result())
+        worker = RecognitionWorkerThread(detector, embedder, MagicMock(), recognize_fn)
+        worker._fast_pair_similarity = 0.90
+        worker._quality = MagicMock()
+        worker._quality.assess.return_value = MagicMock(acceptable=True)
+        frame = np.zeros((480, 640, 3), dtype=np.uint8)
+
+        worker._process(frame)
+        worker._process(frame)
+
+        recognize_fn.assert_called_once()
+
     def test_third_sample_discards_one_divergent_outlier(self) -> None:
         detector = MagicMock()
         detector.detect.return_value = [MagicMock()]
@@ -121,7 +141,7 @@ class RecognitionWorkerThreadTest(unittest.TestCase):
         worker._process(frame)
         recognize_fn.assert_called_once()
 
-    def test_clears_samples_when_quality_drops(self) -> None:
+    def test_tolerates_one_quality_oscillation_then_clears_on_repeated_failure(self) -> None:
         detector = MagicMock()
         detector.detect.return_value = [MagicMock()]
         embedder = MagicMock()
@@ -131,9 +151,12 @@ class RecognitionWorkerThreadTest(unittest.TestCase):
         worker._quality.assess.side_effect = [
             MagicMock(acceptable=True),
             MagicMock(acceptable=False, reason="TOO_DARK", message="Mais luz"),
+            MagicMock(acceptable=False, reason="TOO_DARK", message="Mais luz"),
         ]
         frame = np.zeros((480, 640, 3), dtype=np.uint8)
 
+        worker._process(frame)
+        self.assertEqual(1, len(worker._embedding_samples))
         worker._process(frame)
         self.assertEqual(1, len(worker._embedding_samples))
         worker._process(frame)

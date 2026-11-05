@@ -27,6 +27,10 @@ class Camera:
                 f"[CAMERA] Nao foi possivel abrir a camera no index {camera_index}."
             )
 
+        if os.name == "nt" and os.getenv("CAMERA_USE_MJPG", "true").lower() in {"1", "true", "yes"}:
+            # Evita que webcams USB reduzam silenciosamente o FPS ao transmitir
+            # quadros sem compressão, diminuindo a idade do frame analisado.
+            self.capture.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
         self.capture.set(cv2.CAP_PROP_FRAME_WIDTH, width)
         self.capture.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
         self.capture.set(cv2.CAP_PROP_FPS, fps)

@@ -60,6 +60,22 @@ CAMERA_HEIGHT = 480
 CAMERA_FPS = 30
 CAMERA_POLL_MS = 33  # ~30fps
 
+
+def _bounded_env_int(name: str, default: int, minimum: int, maximum: int) -> int:
+    try:
+        value = int(os.getenv(name, str(default)))
+    except ValueError:
+        return default
+    return value if minimum <= value <= maximum else default
+
+
+def _bounded_env_float(name: str, default: float, minimum: float, maximum: float) -> float:
+    try:
+        value = float(os.getenv(name, str(default)))
+    except ValueError:
+        return default
+    return value if minimum <= value <= maximum else default
+
 def _first_name(name: object | None) -> str:
     parts = str(name).strip().split() if name is not None else []
     return parts[0] if parts else ""
@@ -135,11 +151,15 @@ class RecognitionWorkerThread(QThread):
         self._frame_lock = __import__("threading").Lock()
         self._frame_event = __import__("threading").Event()
 
-        confirmation_samples = int(os.getenv("FACE_CONFIRMATION_SAMPLES", "3"))
-        if confirmation_samples < 3 or confirmation_samples > 7:
-            confirmation_samples = 3
+        confirmation_samples = _bounded_env_int("FACE_CONFIRMATION_SAMPLES", 3, 3, 7)
         self._embedding_samples: deque[np.ndarray] = deque(maxlen=confirmation_samples)
-        self._fast_pair_similarity = float(os.getenv("FACE_FAST_PAIR_SIMILARITY", "0.94"))
+        self._fast_pair_similarity = _bounded_env_float(
+            "FACE_FAST_PAIR_SIMILARITY", 0.90, 0.85, 0.99
+        )
+        self._quality_retry_frames = _bounded_env_int("FACE_QUALITY_RETRY_FRAMES", 2, 1, 5)
+        self._quality_failures = 0
+        self._validation_started_at: float | None = None
+        self._debug = os.getenv("FACE_DEBUG", "").lower() in {"1", "true", "yes"}
         self._blocked_until = 0.0
         self._show_secs = result_timeout_seconds_from_env()
         self._unknown_required = 10
@@ -148,7 +168,13 @@ class RecognitionWorkerThread(QThread):
         self._last_emitted_guidance: str | None = None
 
         from reconhecimento.recognition.quality import FaceQualityAssessor
-        self._quality = FaceQualityAssessor()
+        self._quality = FaceQualityAssessor(
+            minimum_brightness=_bounded_env_float("FACE_MIN_BRIGHTNESS", 50.0, 20.0, 120.0),
+            maximum_brightness=_bounded_env_float("FACE_MAX_BRIGHTNESS", 220.0, 140.0, 250.0),
+            minimum_contrast=_bounded_env_float("FACE_MIN_CONTRAST", 15.0, 5.0, 50.0),
+            minimum_sharpness=_bounded_env_float("FACE_MIN_SHARPNESS", 35.0, 5.0, 150.0),
+            minimum_face_width_ratio=_bounded_env_float("FACE_MIN_WIDTH_RATIO", 0.16, 0.10, 0.40),
+        )
 
     def submit_frame(self, frame):
         with self._frame_lock:
@@ -186,21 +212,30 @@ class RecognitionWorkerThread(QThread):
 
         if n_faces == 0:
             self._embedding_samples.clear()
+            self._quality_failures = 0
+            self._validation_started_at = None
             self._guide("NO_FACE", "Posicione-se diante da câmera e olhe para a tela.", required_frames=5)
             return
 
         if n_faces > 1:
             self._embedding_samples.clear()
+            self._quality_failures = 0
+            self._validation_started_at = None
             self._guide("MULTIPLE_FACES", "Vamos por uma pessoa de cada vez.")
             return
 
         quality = self._quality.assess(frame, faces[0])
         if not quality.acceptable:
-            self._embedding_samples.clear()
+            self._quality_failures += 1
+            if self._quality_failures >= self._quality_retry_frames:
+                self._embedding_samples.clear()
             self._guide(quality.reason, quality.message)
             return
 
+        self._quality_failures = 0
         self._clear_guidance()
+        if not self._embedding_samples:
+            self._validation_started_at = time.perf_counter()
         embedding = np.asarray(self.embedder.generate(faces[0], frame), dtype=np.float32)
         self._embedding_samples.append(embedding)
         if len(self._embedding_samples) == 1:
@@ -233,12 +268,26 @@ class RecognitionWorkerThread(QThread):
         try:
             if self.recognize_fn is None:
                 raise RuntimeError("Funcao de reconhecimento nao configurada")
+            api_started_at = time.perf_counter()
             result = self.recognize_fn(probe)
+            api_elapsed_ms = (time.perf_counter() - api_started_at) * 1000
         except Exception as exc:
             print(f"[WARN] Falha no reconhecimento: {exc}")
             self.result_ready.emit(DisplayState.error())
             self._blocked_until = time.monotonic() + self._show_secs
             return
+
+        if self._debug:
+            total_elapsed_ms = (
+                (time.perf_counter() - self._validation_started_at) * 1000
+                if self._validation_started_at is not None
+                else api_elapsed_ms
+            )
+            print(
+                f"[PERF] validacao={total_elapsed_ms:.0f}ms "
+                f"api={api_elapsed_ms:.0f}ms amostras={len(samples)}"
+            )
+        self._validation_started_at = None
 
         self._blocked_until = time.monotonic() + self._show_secs
         if result.allowed:
@@ -633,6 +682,7 @@ class PortraitWindow(QMainWindow):
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._on_timer)
         self._frame_count = 0
+        self._process_every_n = _bounded_env_int("FACE_PROCESS_EVERY_N", 1, 1, 4)
         self._camera_read_failures = 0
 
         # Controle de estado
@@ -856,8 +906,9 @@ class PortraitWindow(QMainWindow):
 
         self._frame_count += 1
 
-        # Enviar para worker a cada 3 frames
-        if self._frame_count % 3 == 0 and hasattr(self, "_worker"):
+        # O worker mantém somente o frame mais recente, portanto podemos
+        # alimentá-lo a cada captura sem formar fila nem aumentar a latência.
+        if self._frame_count % self._process_every_n == 0 and hasattr(self, "_worker"):
             self._worker.submit_frame(frame)
 
         # Atualizar preview (se não estiver no overlay de sucesso)

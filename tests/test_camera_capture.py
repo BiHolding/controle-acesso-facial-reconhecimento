@@ -17,6 +17,10 @@ class CameraCaptureTest(unittest.TestCase):
         camera = Camera(camera_index=1)
 
         video_capture.assert_called_once_with(1, cv2.CAP_DSHOW)
+        capture.set.assert_any_call(
+            cv2.CAP_PROP_FOURCC,
+            cv2.VideoWriter_fourcc(*"MJPG"),
+        )
         camera.release()
 
     @patch("reconhecimento.camera.capture.cv2.VideoCapture")
